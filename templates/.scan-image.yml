@@ -1,0 +1,53 @@
+# .scan-image.yml — Trivy vulnerability scan on the image already in the registry.
+#
+# Because BuildKit pushes directly (no tar artifact), Trivy must pull the image
+# from the registry. The job therefore depends on the build job completing first.
+#
+# The Trivy vulnerability database is cached in GitLab CI cache to avoid
+# re-downloading (~200 MB) on every run. The cache key is intentionally broad
+# (trivy-db) so all pipelines across the project share the same warm DB.
+#
+# If Trivy finds a vulnerability at or above trivy_severity, it exits non-zero,
+# the job fails, and the cleanup job (on_failure) removes the pushed image.
+
+.scan-image:
+  stage: scan-image
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  variables:
+    IMAGE_REF: $CI_REGISTRY_IMAGE/$[[ inputs.app_name ]]:$CI_COMMIT_SHORT_SHA
+    TRIVY_SEVERITY: $[[ inputs.trivy_severity ]]
+    # Tell Trivy where to find and store its offline DB cache.
+    TRIVY_CACHE_DIR: .trivy-cache
+    # Skip the update check; the cache policy below controls freshness.
+    TRIVY_NO_PROGRESS: "false"
+  cache:
+    key: trivy-db
+    paths:
+      - .trivy-cache/
+    # pull-push: warm the cache on the first run, re-use on subsequent runs.
+    policy: pull-push
+  before_script:
+    # Authenticate so Trivy can pull the private image.
+    - |
+      trivy registry login \
+        --username "$CI_REGISTRY_USER" \
+        --password "$CI_REGISTRY_PASSWORD" \
+        "$CI_REGISTRY"
+  script:
+    - |
+      trivy image \
+        --cache-dir "${TRIVY_CACHE_DIR}" \
+        --severity "${TRIVY_SEVERITY}" \
+        --exit-code 1 \
+        --ignore-unfixed \
+        --format table \
+        "${IMAGE_REF}"
+  needs:
+    - job: build
+  artifacts:
+    when: always
+    paths:
+      - trivy-report.txt
+    expire_in: 7 days

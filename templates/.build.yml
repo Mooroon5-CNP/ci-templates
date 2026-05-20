@@ -1,0 +1,58 @@
+# .build.yml — BuildKit rootless image build and push to GitLab Container Registry.
+#
+# Uses moby/buildkit:rootless to avoid the privileged DinD security requirement.
+# BUILDKITD_FLAGS disables the process sandbox that rootless mode cannot create
+# inside an unprivileged container (OCI worker still enforces filesystem isolation).
+#
+# The image is pushed directly to the registry during the build step; there is
+# no artifact tar file. Downstream jobs (scan-image, cleanup) must pull from
+# the registry, not from a CI artifact.
+
+.build:
+  stage: build
+  image:
+    name: moby/buildkit:rootless
+    # Override entrypoint so GitLab can inject its own before_script wrapper.
+    entrypoint: [""]
+  # Required on self-hosted runners: BuildKit rootless needs a dedicated runner
+  # tagged [dind] that has been configured with the necessary kernel capabilities
+  # (user namespaces, overlayfs). See runner configuration notes in README.md.
+  tags:
+    - dind
+  variables:
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+    # Convenience aliases derived from GitLab predefined variables.
+    APP_NAME: $[[ inputs.app_name ]]
+    APP_PORT: $[[ inputs.app_port ]]
+    IMAGE_REF: $CI_REGISTRY_IMAGE/$[[ inputs.app_name ]]:$CI_COMMIT_SHORT_SHA
+    CACHE_REF: $CI_REGISTRY_IMAGE/cache:$[[ inputs.app_name ]]
+  before_script:
+    # Validate that all required runtime variables are present before attempting
+    # any network calls; fail fast with a descriptive message.
+    - |
+      for var in CI_REGISTRY CI_REGISTRY_USER CI_REGISTRY_PASSWORD CI_REGISTRY_IMAGE CI_COMMIT_SHORT_SHA; do
+        eval "val=\$$var"
+        if [ -z "$val" ]; then
+          echo "[build] ERROR: required variable '$var' is not set or empty" >&2
+          exit 1
+        fi
+      done
+    # Provide registry credentials to buildctl via the standard Docker config
+    # file. buildkit reads this path by default; no daemon restart required.
+    - mkdir -p ~/.docker
+    - |
+      printf '{"auths":{"%s":{"auth":"%s"}}}' \
+        "$CI_REGISTRY" \
+        "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" \
+        > ~/.docker/config.json
+  script:
+    - |
+      buildctl-daemonless.sh build \
+        --frontend dockerfile.v0 \
+        --local context=. \
+        --local dockerfile=. \
+        --export-cache type=registry,ref=${CACHE_REF},mode=max \
+        --import-cache type=registry,ref=${CACHE_REF} \
+        --opt build-arg:APP_PORT=${APP_PORT} \
+        --output type=image,name=${IMAGE_REF},push=true
+    - echo "[build] pushed ${IMAGE_REF}"

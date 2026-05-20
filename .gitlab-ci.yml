@@ -1,0 +1,96 @@
+# .gitlab-ci.yml — Self-validation pipeline for the ci-templates repository.
+#
+# Two goals:
+#   1. Prove this is an active GitLab CI project (required for the registry
+#      and for other projects to reference it via include:project).
+#   2. Catch YAML syntax errors and GitLab pipeline validation failures before
+#      a broken template reaches consuming application pipelines.
+#
+# This file intentionally does NOT include pipeline.yml from itself — that
+# file uses spec:inputs and requires consumer-supplied values that would make
+# self-inclusion circular and impossible to satisfy here.
+
+stages:
+  - lint
+
+# ---------------------------------------------------------------------------
+# Job 1 — YAML syntax lint
+# ---------------------------------------------------------------------------
+lint-templates:
+  stage: lint
+  image:
+    name: cytopia/yamllint:latest
+    # yamllint ships a real entrypoint; override it so GitLab can inject
+    # before_script and run arbitrary shell commands in the container.
+    entrypoint: [""]
+  script:
+    # Lint every template file and the main pipeline entry point.
+    # --config-file resolves relative to the repo root where CI clones to.
+    - |
+      yamllint \
+        --config-file .yamllint.yml \
+        pipeline.yml \
+        templates/.build.yml \
+        templates/.scan-secrets.yml \
+        templates/.scan-image.yml \
+        templates/.cleanup.yml \
+        templates/.update-config.yml
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: always
+
+# ---------------------------------------------------------------------------
+# Job 2 — GitLab CI lint API validation
+# ---------------------------------------------------------------------------
+# This catches issues that yamllint cannot see: invalid GitLab-specific keys,
+# missing required fields, bad stage references, broken include paths, etc.
+#
+# The CI lint API accepts a raw YAML string and returns a JSON object:
+#   { "valid": true/false, "errors": [...], "warnings": [...] }
+#
+# pipeline.yml contains a spec:inputs block with required inputs (no defaults).
+# The lint API validates the structure itself, not a particular instantiation,
+# so required inputs without defaults are accepted at this level.
+validate-pipeline-syntax:
+  stage: lint
+  image: alpine/curl:latest
+  script:
+    - |
+      PIPELINE_CONTENT=$(cat pipeline.yml)
+
+      # POST the raw YAML to the CI lint endpoint for this project.
+      # CI_JOB_TOKEN is automatically scoped to the current project.
+      RESPONSE=$(
+        curl --silent --fail \
+          --request POST \
+          --header "Content-Type: application/json" \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --data-raw "$(
+            # Use jq to safely encode the YAML string as a JSON value,
+            # avoiding shell quoting issues with special characters.
+            printf '%s' "$PIPELINE_CONTENT" \
+              | jq -Rs '{"content": .}'
+          )" \
+          "${CI_SERVER_URL}/api/v4/projects/${CI_PROJECT_ID}/ci/lint"
+      )
+
+      echo "CI lint response:"
+      echo "$RESPONSE" | jq .
+
+      # Extract the validity flag and surface any errors before failing.
+      IS_VALID=$(echo "$RESPONSE" | jq -r '.valid')
+      if [ "$IS_VALID" != "true" ]; then
+        echo ""
+        echo "ERROR: pipeline.yml failed GitLab CI validation:" >&2
+        echo "$RESPONSE" | jq -r '.errors[]' >&2
+        exit 1
+      fi
+
+      echo "pipeline.yml is valid."
+  needs:
+    # Run validation only after YAML syntax is confirmed clean; avoids
+    # confusing API error messages caused by malformed YAML input.
+    - lint-templates
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_success

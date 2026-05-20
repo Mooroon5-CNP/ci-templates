@@ -1,0 +1,41 @@
+# .yamllint.yml — yamllint configuration for all CI template files.
+#
+# Applied by the lint-templates job in .gitlab-ci.yml on every push.
+# Rules are intentionally lenient where GitLab YAML conventions conflict
+# with strict YAML style (e.g., truthy values like "on", "yes").
+
+extends: default
+
+rules:
+  # GitLab CI uses bare strings like "on_failure", "always", "never" as enum
+  # values; these are valid YAML scalars, not booleans — allow them.
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+
+  # 120 chars is wide enough for long image names and buildctl invocations
+  # without requiring artificial line breaks that hurt readability.
+  line-length:
+    max: 120
+    level: warning
+
+  # Block scalars (| and >) are used extensively for multi-line scripts;
+  # disable the comment-indentation rule which false-positives inside them.
+  comments-indentation: disable
+
+  # Two-space indentation is enforced (GitLab standard).
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+  # Allow multiple blank lines between top-level keys for readability.
+  empty-lines:
+    max: 2
+    max-start: 0
+    max-end: 1
+
+  # Don't require document-start markers (---) on every file; pipeline.yml
+  # uses one to separate the spec: block from the pipeline body, but template
+  # files do not.
+  document-start: disable

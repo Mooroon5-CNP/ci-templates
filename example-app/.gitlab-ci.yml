@@ -1,0 +1,64 @@
+# example-app/.gitlab-ci.yml — Minimal example of consuming ci-templates.
+#
+# Copy this file into your application repository and adjust the inputs.
+# Full documentation: https://gitlab.example.com/platform/ci-templates/-/blob/main/README.md
+#
+# ─── Required CI/CD variables ────────────────────────────────────────────────
+#
+#   Set these in your project under Settings → CI/CD → Variables:
+#
+#   CONFIG_REPO_TOKEN   (masked, protected)
+#     A GitLab Project or Personal Access Token with `write_repository` scope
+#     on the GitOps config repo. This token lets the pipeline push the updated
+#     image tag into the config repo so ArgoCD picks up the new version.
+#
+#   CI_REGISTRY_PASSWORD  (masked)
+#     Usually auto-injected by GitLab for the built-in Container Registry.
+#     If you use an external registry, set this explicitly.
+#
+# ─── Deployment flow ─────────────────────────────────────────────────────────
+#
+#   Developer flow (dev environment):
+#     1. Merge feature branch → main
+#     2. Pipeline runs automatically:
+#        scan-secrets → build → scan-image → update-config-dev
+#     3. ArgoCD detects the newTag change in overlays/dev/ and syncs the cluster.
+#
+#   Production promotion flow:
+#     1. Create a Merge Request: main → prod
+#     2. Merge the MR (requires approval if branch protection is configured).
+#     3. Pipeline runs on the prod branch up to update-config-prod,
+#        which is gated with `when: manual`.
+#     4. A human clicks "Run" on the update-config-prod job in the pipeline UI.
+#     5. ArgoCD detects the newTag change in overlays/prod/ and syncs the cluster.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Only trigger the pipeline on the two meaningful branches.
+# Other branches (feature/*, hotfix/*) should use their own lightweight checks
+# and not consume the full secure pipeline on every push.
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "prod"'
+
+include:
+  - project: 'nazim.lameche/ci-templates'    # In production, pin this to a release tag (e.g. ref: v1.2.0) instead of
+    # "main" to avoid unexpected breaking changes from upstream template updates.
+    ref: main
+    file: 'pipeline.yml'
+    inputs:
+      # The application name must match the directory name under
+      # k8s-config/apps/<app_name>/overlays/{dev,prod}/ in the config repo.
+      app_name: "example-app"
+
+      # The port your Dockerfile exposes. Passed as a build-arg to BuildKit.
+      app_port: "8080"
+
+      # HTTPS URL of the GitOps config repository that ArgoCD watches.
+      # Replace with your actual config repo URL.
+      config_repo_url: "https://gitlab.example.com/platform/k8s-config.git"
+
+      # Severity level(s) at which Trivy should block the pipeline.
+      # Use "HIGH,CRITICAL" for stricter policies.
+      trivy_severity: "CRITICAL"
