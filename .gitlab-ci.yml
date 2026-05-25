@@ -59,33 +59,42 @@ validate-pipeline-syntax:
     - apk add --no-cache jq
   script:
     - |
-      PIPELINE_CONTENT=$(cat pipeline.yml)
-
-      # POST the raw YAML to the CI lint endpoint for this project.
-      # CI_JOB_TOKEN is automatically scoped to the current project.
-      RESPONSE=$(
-        curl --silent --fail \
-          --request POST \
-          --header "Content-Type: application/json" \
-          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-          --data-raw "$(
-            # Use jq to safely encode the YAML string as a JSON value,
-            # avoiding shell quoting issues with special characters.
-            printf '%s' "$PIPELINE_CONTENT" \
-              | jq -Rs '{"content": .}'
-          )" \
-          "${CI_SERVER_URL}/api/v4/projects/${CI_PROJECT_ID}/ci/lint"
+      # The project-scoped lint endpoint (/projects/:id/ci/lint) was removed
+      # in GitLab 16.0. Use the global endpoint and pass CI_PROJECT_PATH so
+      # the API can resolve any include:project references inside the YAML.
+      #
+      # Pipe JSON via stdin (--data @-) to avoid shell-quoting issues with
+      # special characters in the YAML content. Write the response body to a
+      # temp file so HTTP status and body can be checked independently.
+      HTTP_STATUS=$(
+        jq -Rsc --arg project "$CI_PROJECT_PATH" \
+             '{"content": ., "project": $project}' \
+             pipeline.yml \
+          | curl --silent \
+              --output /tmp/lint-response.json \
+              --write-out "%{http_code}" \
+              --request POST \
+              --header "Content-Type: application/json" \
+              --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+              --data @- \
+              "${CI_SERVER_URL}/api/v4/ci/lint"
       )
 
+      echo "HTTP status: ${HTTP_STATUS}"
       echo "CI lint response:"
-      echo "$RESPONSE" | jq .
+      jq . /tmp/lint-response.json
+
+      if [ "$HTTP_STATUS" != "200" ]; then
+        echo "ERROR: CI lint API returned HTTP ${HTTP_STATUS}" >&2
+        exit 1
+      fi
 
       # Extract the validity flag and surface any errors before failing.
-      IS_VALID=$(echo "$RESPONSE" | jq -r '.valid')
+      IS_VALID=$(jq -r '.valid' /tmp/lint-response.json)
       if [ "$IS_VALID" != "true" ]; then
         echo ""
         echo "ERROR: pipeline.yml failed GitLab CI validation:" >&2
-        echo "$RESPONSE" | jq -r '.errors[]' >&2
+        jq -r '.errors[]' /tmp/lint-response.json >&2
         exit 1
       fi
 
