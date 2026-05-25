@@ -40,74 +40,70 @@ lint-templates:
       when: always
 
 # ---------------------------------------------------------------------------
-# Job 2 — GitLab CI lint API validation
+# Job 2 — GitLab CI schema validation (local, no API required)
 # ---------------------------------------------------------------------------
-# This catches issues that yamllint cannot see: invalid GitLab-specific keys,
-# missing required fields, bad stage references, broken include paths, etc.
+# /api/v4/ci/lint and /api/v4/projects/:id/ci/lint are both gone in GitLab
+# 17+. We validate locally against the official GitLab CI JSON schema
+# published on SchemaStore. This catches unknown keywords, wrong value types,
+# missing required fields, and invalid stage/image/rule structures without
+# needing any network access to the GitLab API.
 #
-# Auth note: CI_JOB_TOKEN is NOT accepted by the CI lint API. GitLab's job
-# token allowlist only covers registry, package, and a few project endpoints.
-# Requests with a job token to /api/v4/ci/lint return 404 (GitLab deliberately
-# returns 404 instead of 401 for non-allowlisted endpoints). A Personal Access
-# Token with read_api scope is required. Store it as a masked CI/CD variable
-# named GITLAB_TOKEN at the project or group level.
+# pipeline.yml is a two-document YAML file:
+#   Document 1 — spec:inputs  (GitLab component syntax, not in the CI schema)
+#   Document 2 — pipeline body  (what we validate here)
+# We extract document 2 into a temp file before running check-jsonschema.
 #
-# How to create the token:
-#   User Settings → Access Tokens → Add new token
-#   Scopes: read_api
-#   Store the value in: Settings → CI/CD → Variables → GITLAB_TOKEN (masked)
+# The schema is downloaded once and stored in .schema-cache/ via GitLab cache
+# so subsequent runs do not hit SchemaStore on every pipeline.
 validate-pipeline-syntax:
   stage: lint
-  image: alpine/curl:latest
+  image: python:3.12-alpine
+  cache:
+    key: gitlab-ci-schema-v1
+    paths:
+      - .schema-cache/
+    policy: pull-push
   before_script:
-    - apk add --no-cache jq
+    - pip install --quiet pyyaml "check-jsonschema>=0.28"
+    - mkdir -p .schema-cache
+    - |
+      # Download schema only when the cache is cold.
+      if [ ! -f .schema-cache/gitlab-ci.json ]; then
+        python3 -c "
+      import urllib.request
+      url = 'https://json.schemastore.org/gitlab-ci'
+      urllib.request.urlretrieve(url, '.schema-cache/gitlab-ci.json')
+      print('Schema downloaded from SchemaStore.')
+      "
+      else
+        echo "Schema loaded from cache."
+      fi
   script:
     - |
-      # Fail fast with a clear message rather than a confusing 404 if the
-      # required PAT was not configured in CI/CD variables.
-      if [ -z "$GITLAB_TOKEN" ]; then
-        echo "ERROR: GITLAB_TOKEN is not set." >&2
-        echo "Create a Personal Access Token (read_api scope) and store it as" >&2
-        echo "a masked CI/CD variable named GITLAB_TOKEN." >&2
-        exit 1
-      fi
+      # Extract the pipeline body (second YAML document) from pipeline.yml.
+      # yaml.safe_load_all parses all documents; docs[-1] is the pipeline body.
+      python3 -c "
+      import yaml, sys
+      with open('pipeline.yml') as f:
+          docs = list(yaml.safe_load_all(f))
+      if len(docs) < 2:
+          print('ERROR: pipeline.yml must have two documents (spec:inputs + pipeline body)', file=sys.stderr)
+          sys.exit(1)
+      with open('/tmp/pipeline-body.yml', 'w') as out:
+          yaml.dump(docs[-1], out, default_flow_style=False, allow_unicode=True)
+      print(f'Extracted pipeline body from {len(docs)}-document YAML.')
+      "
 
-      # POST to the global CI lint endpoint (project-scoped endpoint removed
-      # in GitLab 16.0). Pass CI_PROJECT_PATH so the API can resolve any
-      # include:project references in the YAML being validated.
-      # Pipe via stdin to avoid shell-quoting issues with the YAML content.
-      HTTP_STATUS=$(
-        jq -Rsc --arg project "$CI_PROJECT_PATH" \
-             '{"content": ., "project": $project}' \
-             pipeline.yml \
-          | curl --silent \
-              --output /tmp/lint-response.json \
-              --write-out "%{http_code}" \
-              --request POST \
-              --header "Content-Type: application/json" \
-              --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-              --data @- \
-              "${CI_SERVER_URL}/api/v4/ci/lint"
-      )
+      check-jsonschema \
+        --schemafile .schema-cache/gitlab-ci.json \
+        /tmp/pipeline-body.yml \
+        templates/.build.yml \
+        templates/.scan-secrets.yml \
+        templates/.scan-image.yml \
+        templates/.cleanup.yml \
+        templates/.update-config.yml
 
-      echo "HTTP status: ${HTTP_STATUS}"
-      echo "CI lint response:"
-      jq . /tmp/lint-response.json
-
-      if [ "$HTTP_STATUS" != "200" ]; then
-        echo "ERROR: CI lint API returned HTTP ${HTTP_STATUS}" >&2
-        exit 1
-      fi
-
-      IS_VALID=$(jq -r '.valid' /tmp/lint-response.json)
-      if [ "$IS_VALID" != "true" ]; then
-        echo ""
-        echo "ERROR: pipeline.yml failed GitLab CI validation:" >&2
-        jq -r '.errors[]' /tmp/lint-response.json >&2
-        exit 1
-      fi
-
-      echo "pipeline.yml is valid."
+      echo "All CI files passed GitLab CI schema validation."
   needs:
     - lint-templates
   rules:
