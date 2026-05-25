@@ -58,44 +58,31 @@ lint-templates:
 validate-pipeline-syntax:
   stage: lint
   image: python:3.12-alpine
-  cache:
-    key: gitlab-ci-schema-v1
-    paths:
-      - .schema-cache/
-    policy: pull-push
+  # No cache block needed: check-jsonschema >= 0.28 ships the GitLab CI schema
+  # as a bundled vendor schema (vendor.gitlab-ci). No network call is made at
+  # validation time; the schema is read from the installed package itself.
   before_script:
     - pip install --quiet pyyaml "check-jsonschema>=0.28"
-    - mkdir -p .schema-cache
-    - |
-      # Download schema only when the cache is cold.
-      if [ ! -f .schema-cache/gitlab-ci.json ]; then
-        python3 -c "
-      import urllib.request
-      url = 'https://json.schemastore.org/gitlab-ci'
-      urllib.request.urlretrieve(url, '.schema-cache/gitlab-ci.json')
-      print('Schema downloaded from SchemaStore.')
-      "
-      else
-        echo "Schema loaded from cache."
-      fi
   script:
     - |
-      # Extract the pipeline body (second YAML document) from pipeline.yml.
-      # yaml.safe_load_all parses all documents; docs[-1] is the pipeline body.
+      # pipeline.yml is a two-document YAML file separated by ---.
+      # Document 1: spec:inputs (GitLab component syntax, not in the CI schema)
+      # Document 2: pipeline body (what we validate here)
+      # Extract document 2 into a temp file before running check-jsonschema.
       python3 -c "
       import yaml, sys
       with open('pipeline.yml') as f:
           docs = list(yaml.safe_load_all(f))
       if len(docs) < 2:
-          print('ERROR: pipeline.yml must have two documents (spec:inputs + pipeline body)', file=sys.stderr)
+          print('ERROR: pipeline.yml must contain two YAML documents', file=sys.stderr)
           sys.exit(1)
       with open('/tmp/pipeline-body.yml', 'w') as out:
           yaml.dump(docs[-1], out, default_flow_style=False, allow_unicode=True)
-      print(f'Extracted pipeline body from {len(docs)}-document YAML.')
+      print(f'Extracted pipeline body ({len(docs)} documents found in pipeline.yml).')
       "
 
       check-jsonschema \
-        --schemafile .schema-cache/gitlab-ci.json \
+        --builtin-schema vendor.gitlab-ci \
         /tmp/pipeline-body.yml \
         templates/.build.yml \
         templates/.scan-secrets.yml \
