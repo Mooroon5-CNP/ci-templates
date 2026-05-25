@@ -54,6 +54,9 @@ lint-templates:
 validate-pipeline-syntax:
   stage: lint
   image: alpine/curl:latest
+  before_script:
+    # alpine/curl is a minimal Alpine image; jq is not bundled.
+    - apk add --no-cache jq
   script:
     - |
       PIPELINE_CONTENT=$(cat pipeline.yml)
