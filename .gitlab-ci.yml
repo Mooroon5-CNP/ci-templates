@@ -45,27 +45,37 @@ lint-templates:
 # This catches issues that yamllint cannot see: invalid GitLab-specific keys,
 # missing required fields, bad stage references, broken include paths, etc.
 #
-# The CI lint API accepts a raw YAML string and returns a JSON object:
-#   { "valid": true/false, "errors": [...], "warnings": [...] }
+# Auth note: CI_JOB_TOKEN is NOT accepted by the CI lint API. GitLab's job
+# token allowlist only covers registry, package, and a few project endpoints.
+# Requests with a job token to /api/v4/ci/lint return 404 (GitLab deliberately
+# returns 404 instead of 401 for non-allowlisted endpoints). A Personal Access
+# Token with read_api scope is required. Store it as a masked CI/CD variable
+# named GITLAB_TOKEN at the project or group level.
 #
-# pipeline.yml contains a spec:inputs block with required inputs (no defaults).
-# The lint API validates the structure itself, not a particular instantiation,
-# so required inputs without defaults are accepted at this level.
+# How to create the token:
+#   User Settings → Access Tokens → Add new token
+#   Scopes: read_api
+#   Store the value in: Settings → CI/CD → Variables → GITLAB_TOKEN (masked)
 validate-pipeline-syntax:
   stage: lint
   image: alpine/curl:latest
   before_script:
-    # alpine/curl is a minimal Alpine image; jq is not bundled.
     - apk add --no-cache jq
   script:
     - |
-      # The project-scoped lint endpoint (/projects/:id/ci/lint) was removed
-      # in GitLab 16.0. Use the global endpoint and pass CI_PROJECT_PATH so
-      # the API can resolve any include:project references inside the YAML.
-      #
-      # Pipe JSON via stdin (--data @-) to avoid shell-quoting issues with
-      # special characters in the YAML content. Write the response body to a
-      # temp file so HTTP status and body can be checked independently.
+      # Fail fast with a clear message rather than a confusing 404 if the
+      # required PAT was not configured in CI/CD variables.
+      if [ -z "$GITLAB_TOKEN" ]; then
+        echo "ERROR: GITLAB_TOKEN is not set." >&2
+        echo "Create a Personal Access Token (read_api scope) and store it as" >&2
+        echo "a masked CI/CD variable named GITLAB_TOKEN." >&2
+        exit 1
+      fi
+
+      # POST to the global CI lint endpoint (project-scoped endpoint removed
+      # in GitLab 16.0). Pass CI_PROJECT_PATH so the API can resolve any
+      # include:project references in the YAML being validated.
+      # Pipe via stdin to avoid shell-quoting issues with the YAML content.
       HTTP_STATUS=$(
         jq -Rsc --arg project "$CI_PROJECT_PATH" \
              '{"content": ., "project": $project}' \
@@ -75,7 +85,7 @@ validate-pipeline-syntax:
               --write-out "%{http_code}" \
               --request POST \
               --header "Content-Type: application/json" \
-              --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+              --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
               --data @- \
               "${CI_SERVER_URL}/api/v4/ci/lint"
       )
@@ -89,7 +99,6 @@ validate-pipeline-syntax:
         exit 1
       fi
 
-      # Extract the validity flag and surface any errors before failing.
       IS_VALID=$(jq -r '.valid' /tmp/lint-response.json)
       if [ "$IS_VALID" != "true" ]; then
         echo ""
@@ -100,8 +109,6 @@ validate-pipeline-syntax:
 
       echo "pipeline.yml is valid."
   needs:
-    # Run validation only after YAML syntax is confirmed clean; avoids
-    # confusing API error messages caused by malformed YAML input.
     - lint-templates
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
