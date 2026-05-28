@@ -1,0 +1,39 @@
+# .test.yml — Run the application test suite (stage: test).
+#
+# Expects the consuming app to define a `test` script in package.json.
+# Uses `npm ci` (not `npm install`) to guarantee reproducibility from the
+# lockfile; never upgrades or adds packages.
+#
+# The node_modules cache is pulled (read-only) from the key warmed by
+# lint-eslint. If lint did not run (e.g. skipped on a hotfix branch) the
+# cache miss falls through to a fresh npm ci — the pipeline still works,
+# just a few seconds slower.
+#
+# Artifacts: test-results.xml is uploaded when present so GitLab can display
+# test results inline on the MR. This requires the test runner to output JUnit
+# XML (Jest: --reporters=jest-junit; Mocha: mocha-junit-reporter).
+# If the file is absent the artifact upload is skipped — not an error.
+
+.test:
+  stage: test
+  image: node:20-alpine
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - node_modules/
+    policy: pull
+  before_script:
+    - npm ci --prefer-offline
+  script:
+    - npm test
+  artifacts:
+    when: always
+    paths:
+      - test-results.xml
+    reports:
+      junit: test-results.xml
+    expire_in: 7 days
+  rules:
+    - when: always

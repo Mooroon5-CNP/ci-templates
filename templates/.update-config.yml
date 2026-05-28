@@ -1,25 +1,33 @@
 # .update-config.yml — Update the Kustomize config repo so ArgoCD picks up the
-# new image tag and reconciles the cluster state (GitOps promotion).
+# new image tag and reconciles the cluster state (stage: push).
 #
-# Two jobs cover two promotion paths:
-#   update-config-dev   — automatic, runs on every push to main
-#   update-config-prod  — manual gate, runs only on the prod branch
+# Two jobs:
+#   update-config-dev   — automatic, runs on every push to main after scan-image
+#                         succeeds.
+#   update-config-prod  — manual gate, runs on the prod branch; a human must
+#                         click "Run" in the GitLab pipeline UI.
 #
-# The `git pull --rebase` before push handles the race condition that occurs
-# when multiple pipelines run concurrently (e.g., rapid successive merges to
-# main). Without rebase the second push would be rejected as non-fast-forward.
+# Both jobs depend on `scan-image` (via `needs:`). If the image scan fails the
+# image is removed by cleanup-on-scan-failure and neither job runs — a
+# vulnerable image can never be promoted.
+#
+# The `git pull --rebase` before push handles the race condition when multiple
+# pipelines run concurrently (rapid successive merges to main). Without rebase
+# the second push would be rejected as non-fast-forward.
 #
 # CONFIG_REPO_TOKEN must be a GitLab Project Access Token (or Personal Access
 # Token) with `write_repository` scope, stored as a masked CI/CD variable.
-# It must NOT be committed to the repository.
 
+# ---------------------------------------------------------------------------
+# Job: update-config-dev
+# ---------------------------------------------------------------------------
 .update-config-dev:
-  stage: update-config
+  stage: push
   image: alpine/git:latest
   variables:
     APP_NAME: $[[ inputs.app_name ]]
     CONFIG_REPO_URL: $[[ inputs.config_repo_url ]]
-    GIT_STRATEGY: none   # We clone the config repo manually; no source checkout needed.
+    GIT_STRATEGY: none
   before_script:
     - |
       for var in CONFIG_REPO_TOKEN CI_COMMIT_SHORT_SHA APP_NAME CONFIG_REPO_URL; do
@@ -29,34 +37,34 @@
           exit 1
         fi
       done
-    # Inject credentials into the clone URL so git can push without a TTY.
-    # The token is never echoed because the variable is masked in GitLab.
     - git config --global user.email "ci-bot@gitlab.local"
     - git config --global user.name "GitLab CI Bot"
   script:
     - |
-      # Embed token in URL: https://oauth2:<token>@gitlab.example.com/org/config-repo.git
       AUTHED_URL=$(echo "${CONFIG_REPO_URL}" | sed "s|https://|https://oauth2:${CONFIG_REPO_TOKEN}@|")
       git clone --depth=1 "${AUTHED_URL}" config-repo
       cd config-repo/apps/${APP_NAME}/overlays/dev
 
       # Patch newTag in-place. kustomization.yaml must contain a line matching:
       #   newTag: <anything>
-      # The sed expression is POSIX-compatible (no GNU extension required).
       sed -i "s|newTag:.*|newTag: ${CI_COMMIT_SHORT_SHA}|" kustomization.yaml
 
       git add kustomization.yaml
       git commit -m "chore(${APP_NAME}): promote ${CI_COMMIT_SHORT_SHA} to dev [ci skip]"
 
-      # Rebase against any concurrent updates before pushing.
       git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
       git push "${AUTHED_URL}" HEAD
+  needs:
+    - job: scan-image
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: on_success
 
+# ---------------------------------------------------------------------------
+# Job: update-config-prod
+# ---------------------------------------------------------------------------
 .update-config-prod:
-  stage: update-config
+  stage: push
   image: alpine/git:latest
   variables:
     APP_NAME: $[[ inputs.app_name ]]
@@ -86,8 +94,9 @@
 
       git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
       git push "${AUTHED_URL}" HEAD
+  needs:
+    - job: scan-image
   rules:
     - if: '$CI_COMMIT_BRANCH == "prod"'
-      # Explicit human approval required before production promotion.
       when: manual
       allow_failure: false

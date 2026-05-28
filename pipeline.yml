@@ -1,29 +1,32 @@
-# pipeline.yml — Reusable CI pipeline template for the internal developer platform.
+# pipeline.yml — Reusable CI pipeline template for the CNP internal platform.
 #
-# Consume this template from any application repository:
+# Usage in any application repository:
 #
 #   include:
 #     - project: 'platform/ci-templates'
-#       ref: main
+#       ref: main          # pin to a release tag in production (e.g. ref: v1.0.0)
 #       file: 'pipeline.yml'
+#       inputs:
+#         app_name: "my-app"
+#         app_port: "3000"
+#         config_repo_url: "https://gitlab.example.com/platform/k8s-config.git"
 #
 #   workflow:
 #     rules:
 #       - if: '$CI_COMMIT_BRANCH == "main"'
 #       - if: '$CI_COMMIT_BRANCH == "prod"'
-#
-#   variables:
-#     # Override any spec:inputs default here if needed.
-#     TRIVY_SEVERITY: "HIGH,CRITICAL"
 
 spec:
   inputs:
-    # Name of the application; used as the image repository name and overlay path.
+    # Application name. Must match:
+    #   - the image repository name in the GitLab Container Registry
+    #   - the directory under k8s-config/apps/<app_name>/overlays/{dev,prod}/
     app_name:
       type: string
       description: "Application name (used as image name and Kustomize overlay directory)"
 
-    # Container port exposed by the application image.
+    # TCP port exposed by the container. Passed as a build-arg so BuildKit
+    # can set it without hard-coding it in the Dockerfile.
     app_port:
       type: string
       default: "8080"
@@ -35,65 +38,75 @@ spec:
       type: string
       description: "HTTPS URL of the GitOps config repository"
 
-    # Trivy exit-code severity threshold. Comma-separated list.
-    # CRITICAL blocks the pipeline; HIGH,CRITICAL also blocks on HIGH findings.
-    trivy_severity:
-      type: string
-      default: "CRITICAL"
-      description: "Trivy severity levels that cause pipeline failure"
-
 ---
 
-# Global default job configuration inherited by every job in the pipeline.
+# ---------------------------------------------------------------------------
+# Global defaults — inherited by every job in the pipeline.
+# ---------------------------------------------------------------------------
 default:
   retry:
     max: 2
-    # Only retry on infrastructure failures (runner crash, network timeout),
-    # not on script failures which indicate a real problem.
+    # Retry only on infrastructure failures (runner crash, network timeout).
+    # Script failures indicate a real problem and must not be retried.
     when: runner_system_failure
 
-stages:
-  - scan-secrets
-  - build
-  - scan-image
-  - cleanup
-  - update-config
 # ---------------------------------------------------------------------------
-# Template includes — each file defines a hidden job (prefixed with a dot)
-# that concrete jobs extend below.
+# Stages — ordered exactly as defined in the CNP contracts.
+# ---------------------------------------------------------------------------
+stages:
+  - lint        # ESLint + Hadolint Dockerfile check
+  - test        # npm test
+  - scan-secu   # Gitleaks secret scan + Trivy dependency scan
+  - build       # BuildKit rootless image build + push to GitLab CR
+  - push        # Trivy image scan + cleanup on failure + GitOps promotion
+
+# ---------------------------------------------------------------------------
+# Template includes — each file defines hidden jobs (prefixed with a dot)
+# that the concrete jobs below extend.
 # ---------------------------------------------------------------------------
 include:
-  - local: templates/.scan-secrets.yml
+  - local: templates/.lint.yml
+  - local: templates/.test.yml
+  - local: templates/.scan-secu.yml
   - local: templates/.build.yml
   - local: templates/.scan-image.yml
   - local: templates/.cleanup.yml
   - local: templates/.update-config.yml
 
 # ---------------------------------------------------------------------------
-# Concrete jobs — extend the hidden templates and bind them to this pipeline.
+# Concrete jobs
 # ---------------------------------------------------------------------------
+
+# — lint stage —
+
+lint-eslint:
+  extends: .lint-eslint
+
+lint-hadolint:
+  extends: .lint-hadolint
+
+# — test stage —
+
+test:
+  extends: .test
+
+# — scan-secu stage —
 
 scan-secrets:
   extends: .scan-secrets
 
+scan-deps:
+  extends: .scan-deps
+
+# — build stage —
+
 build:
   extends: .build
 
+# — push stage —
+
 scan-image:
   extends: .scan-image
-  # Override the artifact output path to include the report content in the
-  # Trivy table format so it appears in the job log as well.
-  script:
-    - |
-      trivy image \
-        --cache-dir "${TRIVY_CACHE_DIR}" \
-        --severity "${TRIVY_SEVERITY}" \
-        --exit-code 1 \
-        --ignore-unfixed \
-        --format table \
-        --output trivy-report.txt \
-        "${IMAGE_REF}"
-      cat trivy-report.txt
 
 cleanup-on-scan-failure:
   extends: .cleanup

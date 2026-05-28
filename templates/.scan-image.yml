@@ -1,35 +1,30 @@
-# .scan-image.yml — Trivy vulnerability scan on the image already in the registry.
+# .scan-image.yml — Trivy vulnerability scan on the built image (stage: push).
 #
-# Because BuildKit pushes directly (no tar artifact), Trivy must pull the image
-# from the registry. The job therefore depends on the build job completing first.
+# Runs AFTER the build job (the image is already pushed to the registry by
+# BuildKit). Trivy must pull the image to inspect it.
 #
-# The Trivy vulnerability database is cached in GitLab CI cache to avoid
-# re-downloading (~200 MB) on every run. The cache key is intentionally broad
-# (trivy-db) so all pipelines across the project share the same warm DB.
+# Blocking rules (CNP contracts):
+#   CRITICAL  → pipeline fails, cleanup-on-scan-failure removes the image.
+#   HIGH/MEDIUM → non-blocking warning printed to job log.
 #
-# If Trivy finds a vulnerability at or above trivy_severity, it exits non-zero,
-# the job fails, and the cleanup job (on_failure) removes the pushed image.
+# The Trivy DB is cached (key: trivy-db) and shared with scan-deps so the
+# ~200 MB database is only downloaded once per project.
 
 .scan-image:
-  stage: scan-image
+  stage: push
   image:
     name: aquasec/trivy:latest
     entrypoint: [""]
   variables:
     IMAGE_REF: $CI_REGISTRY_IMAGE/$[[ inputs.app_name ]]:$CI_COMMIT_SHORT_SHA
-    TRIVY_SEVERITY: $[[ inputs.trivy_severity ]]
-    # Tell Trivy where to find and store its offline DB cache.
     TRIVY_CACHE_DIR: .trivy-cache
-    # Skip the update check; the cache policy below controls freshness.
     TRIVY_NO_PROGRESS: "false"
   cache:
     key: trivy-db
     paths:
       - .trivy-cache/
-    # pull-push: warm the cache on the first run, re-use on subsequent runs.
     policy: pull-push
   before_script:
-    # Authenticate so Trivy can pull the private image.
     - |
       trivy registry login \
         --username "$CI_REGISTRY_USER" \
@@ -37,13 +32,25 @@
         "$CI_REGISTRY"
   script:
     - |
+      echo "[scan-image] Scanning ${IMAGE_REF} for CRITICAL vulnerabilities..."
       trivy image \
         --cache-dir "${TRIVY_CACHE_DIR}" \
-        --severity "${TRIVY_SEVERITY}" \
+        --severity CRITICAL \
         --exit-code 1 \
         --ignore-unfixed \
         --format table \
+        --output trivy-report.txt \
         "${IMAGE_REF}"
+      cat trivy-report.txt
+
+      echo "[scan-image] Scanning for HIGH/MEDIUM vulnerabilities (non-blocking)..."
+      trivy image \
+        --cache-dir "${TRIVY_CACHE_DIR}" \
+        --severity HIGH,MEDIUM \
+        --exit-code 0 \
+        --ignore-unfixed \
+        --format table \
+        "${IMAGE_REF}" || true
   needs:
     - job: build
   artifacts:

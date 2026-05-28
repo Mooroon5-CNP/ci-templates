@@ -1,22 +1,22 @@
 # .cleanup.yml — Delete the pushed image tag from the GitLab Container Registry
-# when a vulnerability scan fails.
+# when a vulnerability scan fails (stage: push).
 #
-# Flow: build pushes → scan-image fails → this job triggers → image deleted.
+# Flow: build pushes → scan-image fails → cleanup triggers → image deleted.
 #
-# Why delete? The image is already in the registry (BuildKit pushed it), but it
-# must not be deployed. Leaving a vulnerable image silently in the registry
-# would allow accidental promotion. Deletion is the safest default; teams that
-# prefer quarantine can override this job.
+# Why delete? The image is already in the registry (BuildKit pushed it during
+# the build stage) but it must not be deployed. Leaving a vulnerable image
+# silently in the registry would allow accidental promotion. Deletion is the
+# safest default; teams that prefer quarantine can override this job.
 #
-# The GitLab Container Registry API requires the numeric repository ID, which
-# is derived here via a two-step API call: list repositories → find matching
-# name → obtain ID → delete tag.
+# The GitLab Container Registry API requires the numeric repository ID, derived
+# here via two API calls: list repositories → find matching name → get ID →
+# delete tag.
 #
 # Authentication uses CI_JOB_TOKEN (scoped to the current project, no extra
 # configuration needed). The token is valid only for the duration of the job.
 
 .cleanup:
-  stage: cleanup     # Same stage as scan-image so it can react to its failure.
+  stage: push
   image: alpine:3.19
   variables:
     APP_NAME: $[[ inputs.app_name ]]
@@ -29,7 +29,6 @@
       echo "[cleanup] image to remove: ${IMAGE_REF}"
 
       # Step 1: resolve the numeric repository ID for this image name.
-      REPO_PATH="${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/${APP_NAME}"
       REPO_ID=$(
         curl --silent --fail \
           --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
@@ -63,8 +62,6 @@
       esac
   needs:
     - job: scan-image
-      # Run regardless of whether scan-image succeeded or was skipped;
-      # the `when: on_failure` below already gates the trigger condition.
       optional: true
   when: on_failure
-  allow_failure: true   # Cleanup failure must not mask the original scan failure.
+  allow_failure: true

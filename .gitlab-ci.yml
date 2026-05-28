@@ -20,18 +20,16 @@ lint-templates:
   stage: lint
   image:
     name: cytopia/yamllint:latest
-    # yamllint ships a real entrypoint; override it so GitLab can inject
-    # before_script and run arbitrary shell commands in the container.
     entrypoint: [""]
   script:
-    # Lint every template file and the main pipeline entry point.
-    # --config-file resolves relative to the repo root where CI clones to.
     - |
       yamllint \
         --config-file .yamllint.yml \
         pipeline.yml \
+        templates/.lint.yml \
+        templates/.test.yml \
+        templates/.scan-secu.yml \
         templates/.build.yml \
-        templates/.scan-secrets.yml \
         templates/.scan-image.yml \
         templates/.cleanup.yml \
         templates/.update-config.yml
@@ -53,22 +51,15 @@ lint-templates:
 #   Document 2 — pipeline body  (what we validate here)
 # We extract document 2 into a temp file before running check-jsonschema.
 #
-# The schema is downloaded once and stored in .schema-cache/ via GitLab cache
-# so subsequent runs do not hit SchemaStore on every pipeline.
+# The schema is bundled with check-jsonschema >= 0.28 (vendor.gitlab-ci),
+# so no network call is made at validation time.
 validate-pipeline-syntax:
   stage: lint
   image: python:3.12-alpine
-  # No cache block needed: check-jsonschema >= 0.28 ships the GitLab CI schema
-  # as a bundled vendor schema (vendor.gitlab-ci). No network call is made at
-  # validation time; the schema is read from the installed package itself.
   before_script:
     - pip install --quiet pyyaml "check-jsonschema>=0.28"
   script:
     - |
-      # pipeline.yml is a two-document YAML file separated by ---.
-      # Document 1: spec:inputs (GitLab component syntax, not in the CI schema)
-      # Document 2: pipeline body (what we validate here)
-      # Extract document 2 into a temp file before running check-jsonschema.
       python3 -c "
       import yaml, sys
       with open('pipeline.yml') as f:
@@ -84,8 +75,10 @@ validate-pipeline-syntax:
       check-jsonschema \
         --builtin-schema vendor.gitlab-ci \
         /tmp/pipeline-body.yml \
+        templates/.lint.yml \
+        templates/.test.yml \
+        templates/.scan-secu.yml \
         templates/.build.yml \
-        templates/.scan-secrets.yml \
         templates/.scan-image.yml \
         templates/.cleanup.yml \
         templates/.update-config.yml
