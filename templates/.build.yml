@@ -14,11 +14,6 @@
     name: moby/buildkit:rootless
     # Override entrypoint so GitLab can inject its own before_script wrapper.
     entrypoint: [""]
-  # Required on self-hosted runners: BuildKit rootless needs a dedicated runner
-  # tagged [dind] that has been configured with the necessary kernel capabilities
-  # (user namespaces, overlayfs). See runner configuration notes in README.md.
-  tags:
-    - dind
   variables:
     BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
     # Convenience aliases derived from GitLab predefined variables.
