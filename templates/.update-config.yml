@@ -23,7 +23,9 @@
 # ---------------------------------------------------------------------------
 .update-config-dev:
   stage: push
-  image: alpine/git:latest
+  image:
+    name: alpine/git:latest
+    entrypoint: [""]
   variables:
     GIT_STRATEGY: none
   before_script:
@@ -63,7 +65,9 @@
 # ---------------------------------------------------------------------------
 .update-config-prod:
   stage: push
-  image: alpine/git:latest
+  image:
+    name: alpine/git:latest
+    entrypoint: [""]
   variables:
     GIT_STRATEGY: none
   before_script:
