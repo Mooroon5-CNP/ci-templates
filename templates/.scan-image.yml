@@ -16,7 +16,6 @@
     name: aquasec/trivy:latest
     entrypoint: [""]
   variables:
-    IMAGE_REF: $CI_REGISTRY_IMAGE/$[[ inputs.app_name ]]:$CI_COMMIT_SHORT_SHA
     TRIVY_CACHE_DIR: .trivy-cache
     TRIVY_NO_PROGRESS: "false"
   cache:

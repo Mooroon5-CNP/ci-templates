@@ -11,10 +11,6 @@
     # Override entrypoint so GitLab can inject its own before_script wrapper.
     entrypoint: [""]
   variables:
-    APP_NAME: $[[ inputs.app_name ]]
-    APP_PORT: $[[ inputs.app_port ]]
-    IMAGE_REF: $CI_REGISTRY_IMAGE/$[[ inputs.app_name ]]:$CI_COMMIT_SHORT_SHA
-    CACHE_REF: $CI_REGISTRY_IMAGE/cache:$[[ inputs.app_name ]]
   before_script:
     # Fail fast if any required GitLab variable is missing.
     - |

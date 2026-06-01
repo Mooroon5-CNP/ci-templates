@@ -25,8 +25,6 @@
   stage: push
   image: alpine/git:latest
   variables:
-    APP_NAME: $[[ inputs.app_name ]]
-    CONFIG_REPO_URL: $[[ inputs.config_repo_url ]]
     GIT_STRATEGY: none
   before_script:
     - |
@@ -67,8 +65,6 @@
   stage: push
   image: alpine/git:latest
   variables:
-    APP_NAME: $[[ inputs.app_name ]]
-    CONFIG_REPO_URL: $[[ inputs.config_repo_url ]]
     GIT_STRATEGY: none
   before_script:
     - |

@@ -19,8 +19,6 @@
   stage: push
   image: alpine:3.19
   variables:
-    APP_NAME: $[[ inputs.app_name ]]
-    IMAGE_REF: $CI_REGISTRY_IMAGE/$[[ inputs.app_name ]]:$CI_COMMIT_SHORT_SHA
     GITLAB_API: ${CI_SERVER_URL}/api/v4
   before_script:
     - apk add --no-cache curl jq
