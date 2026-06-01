@@ -24,7 +24,7 @@ workflow:
     - if: '$CI_COMMIT_BRANCH == "prod"'
 
 include:
-  - project: 'nazim.lameche/ci-templates'
+  - project: 'nazim.lameche/ci-templates' # Change this
     # ─── IMPORTANT ─────────────────────────────────────────────────────────
     # In production, pin this to a release tag to avoid surprises:
     #   ref: v1.0.0
@@ -55,7 +55,7 @@ include:
       #   - The port your Express app calls app.listen() on
       #
       # Default is 8080 if not specified. Most apps use 3000 or 8080.
-      app_port: "8080"
+      app_port: "8080" # Change this if your app listens on a different port
 
       # ── config_repo_url ───────────────────────────────────────────────────
       # The HTTPS URL of the GitOps repository that ArgoCD watches.

@@ -10,14 +10,15 @@ A working example app you can use to test the pipeline end-to-end lives in [test
 ## Table of contents
 
 1. [What does this pipeline do?](#1-what-does-this-pipeline-do)
-2. [How to use it in your app](#2-how-to-use-it-in-your-app)
-3. [CI/CD variables you must configure](#3-cicd-variables-you-must-configure)
-4. [What each stage checks](#4-what-each-stage-checks)
-5. [What your project must have](#5-what-your-project-must-have)
-6. [How deployment works](#6-how-deployment-works)
-7. [Runner requirements](#7-runner-requirements)
-8. [GitOps config repo structure](#8-gitops-config-repo-structure)
-9. [FAQ — Common issues](#9-faq--common-issues)
+2. [Required setup checklist](#2-required-setup-checklist)
+3. [How to use it in your app](#3-how-to-use-it-in-your-app)
+4. [CI/CD variables you must configure](#4-cicd-variables-you-must-configure)
+5. [What each stage checks](#5-what-each-stage-checks)
+6. [What your project must have](#6-what-your-project-must-have)
+7. [How deployment works](#7-how-deployment-works)
+8. [Runner requirements](#8-runner-requirements)
+9. [GitOps config repo structure](#9-gitops-config-repo-structure)
+10. [FAQ — Common issues](#10-faq--common-issues)
 
 ---
 
@@ -43,7 +44,87 @@ If the image scan fails, the image is automatically deleted from the registry.
 
 ---
 
-## 2. How to use it in your app
+## 2. Required setup checklist
+
+Before the pipeline can run on a new app, four things must exist.
+
+| # | What | Who | When |
+|---|---|---|---|
+| 1 | `CONFIG_REPO_TOKEN` CI/CD variable | App team lead or admin | Once per app repo |
+| 2 | No runner setup needed — the pipeline uses Kaniko by default | — | Nothing to do |
+| 3 | `prod` branch created and protected in your app repo | App team lead | Once per app repo |
+| 4 | Kustomize overlay structure in the GitOps config repo | Platform/infra team | Once per app |
+
+---
+
+### 1 — `CONFIG_REPO_TOKEN`
+
+The pipeline pushes the new image tag to the GitOps config repo after each build. It needs a token with write access to do that. Developers never see the token — it is stored encrypted in GitLab and injected automatically at runtime.
+
+**Who sets this up:** a team lead or GitLab admin, once, before the first push.
+
+Steps:
+1. Open the **GitOps config repo** on GitLab → **Settings → Access Tokens → Add new token**
+   - Name: `ci-pipeline-bot`
+   - Role: **Developer**
+   - Scope: **`write_repository`**
+   - Expiry: 1 year from today
+2. **Copy the token value** — it is shown only once
+3. Open your **app repo** → **Settings → CI/CD → Variables → Add variable**
+   - Key: `CONFIG_REPO_TOKEN`
+   - Value: the token you just copied
+   - Masked: ✅ Yes
+   - Protected: ✅ Yes
+
+> **Tip:** if all your app repos are in the same GitLab group, set `CONFIG_REPO_TOKEN` at the **group level** once — every repo in the group inherits it automatically and you never have to repeat this step.
+
+---
+
+### 2 — Runners: nothing to do
+
+The pipeline uses **Kaniko** to build Docker images. Kaniko runs entirely inside the container — it does not need a Docker daemon, privileged mode, or any special runner configuration. It works on EPITA's shared runners and any standard GitLab runner out of the box.
+
+You do not need to install, configure, or tag any runner.
+
+---
+
+### 3 — `prod` branch
+
+The pipeline only runs on `main` and `prod` branches. The `prod` branch must exist and be **protected** (requires a Merge Request — no direct push allowed).
+
+```bash
+# In your app repo, run once:
+git checkout -b prod
+git push origin prod
+```
+
+Then on GitLab: **Settings → Repository → Protected branches**
+- Branch: `prod`
+- Allowed to merge: Maintainers
+- Allowed to push: No one
+
+> Without this, pushing to `prod` will either be blocked or won't trigger the production pipeline.
+
+---
+
+### 4 — Kustomize structure in the GitOps config repo
+
+The pipeline updates image tags in the `k8s-config` repo. That repo must contain this directory structure for each app (created once by the platform team):
+
+```
+k8s-config/
+  apps/
+    <app_name>/            ← must match your app_name input exactly
+      overlays/
+        dev/
+          kustomization.yaml
+        prod/
+          kustomization.yaml
+```
+
+Each `kustomization.yaml` must contain a `newTag:` line (the pipeline replaces it automatically). Full template: [section 9](#9-gitops-config-repo-structure).
+
+---
 
 ### Step 1 — Copy the configuration file
 
@@ -57,7 +138,7 @@ workflow:
     - if: '$CI_COMMIT_BRANCH == "prod"'
 
 include:
-  - project: 'nazim.lameche/ci-templates'
+  - project: 'my_project/ci-templates' # Change this
     ref: main                  # pin to a release tag in production: ref: v1.0.0
     file: 'pipeline.yml'
     inputs:
@@ -76,11 +157,11 @@ include:
 
 ### Step 3 — Set CI/CD variables in GitLab
 
-→ See [section 3](#3-cicd-variables-you-must-configure)
+→ See [section 4](#4-cicd-variables-you-must-configure)
 
 ### Step 4 — Make sure your project meets the requirements
 
-→ See [section 5](#5-what-your-project-must-have)
+→ See [section 6](#6-what-your-project-must-have)
 
 ### Step 5 — Push and watch
 
@@ -88,34 +169,40 @@ Push to `main`. In GitLab go to your project → **CI/CD → Pipelines** to see 
 
 ---
 
-## 3. CI/CD variables you must configure
+## 4. CI/CD variables you must configure
 
-**How to add a variable in GitLab:**
-Your project → **Settings** → **CI/CD** → **Variables** → **Add variable**
+> **Who does this?** A team lead or GitLab admin does this **once per application repo**, before the first pipeline run. Individual developers never need to touch tokens or variables.
 
-| Variable | Masked | Protected | Description |
+### Variables to add to your application repo
+
+Your app repo → **Settings** → **CI/CD** → **Variables** → **Add variable**
+
+| Variable | Masked | Protected | Value |
 |---|---|---|---|
-| `CONFIG_REPO_TOKEN` | ✅ Yes | ✅ Yes | GitLab token with `write_repository` scope on the GitOps config repo. Lets the pipeline push the new image tag so ArgoCD picks it up. |
-| `CI_REGISTRY_PASSWORD` | ✅ Yes | No | GitLab Container Registry password. **Auto-injected by GitLab in most cases** — only set this manually if you use an external registry. |
+| `CONFIG_REPO_TOKEN` | ✅ Yes | ✅ Yes | The token created in step below — lets the pipeline push the new image tag to the GitOps config repo |
 
-> **These variables are injected automatically by GitLab (nothing to do):**
-> `CI_REGISTRY`, `CI_REGISTRY_USER`, `CI_REGISTRY_IMAGE`, `CI_PROJECT_ID`,
-> `CI_JOB_TOKEN`, `CI_COMMIT_SHORT_SHA`
+> **These variables are injected automatically by GitLab — nothing to do:**
+> `CI_REGISTRY`, `CI_REGISTRY_USER`, `CI_REGISTRY_IMAGE`, `CI_REGISTRY_PASSWORD`,
+> `CI_JOB_TOKEN`, `CI_PROJECT_ID`, `CI_COMMIT_SHORT_SHA`
 
-### How to create CONFIG_REPO_TOKEN
+### How to create the token (admin, one-time)
 
-1. Go to GitLab, open the **GitOps config repo** (not your app repo)
+This token authorizes the pipeline to write to the **GitOps config repo** (the repo that holds your Kubernetes manifests, not your app code).
+
+1. Open the **GitOps config repo** on GitLab
 2. **Settings** → **Access Tokens** → **Add new token**
-3. Name: `ci-pipeline-bot`
-4. Expiry: pick a date (e.g. 1 year from now)
-5. Scope: check **`write_repository`** only
-6. Click **Create project access token**
-7. **Copy the token shown** — it is only visible once!
-8. Go to **your application repo** → Settings → CI/CD → Variables → add `CONFIG_REPO_TOKEN`
+3. Name: `ci-pipeline-bot` (just a label so you can identify it later)
+4. Description: `Used by CI pipeline to update kustomization image tags`
+5. Expiry: 1 year from today
+6. Role: **Developer**
+7. Scope: **`write_repository`** only
+8. Click **Create project access token**
+9. **Copy the token value** — it is shown only once
+10. Go to your **application repo** → Settings → CI/CD → Variables → add `CONFIG_REPO_TOKEN` with that value
 
 ---
 
-## 4. What each stage checks
+## 5. What each stage checks
 
 ### `lint` — Code quality
 
@@ -158,7 +245,7 @@ The image is **never tagged `latest`** — always a short commit SHA (e.g. `a1b2
 
 ---
 
-## 5. What your project must have
+## 6. What your project must have
 
 ### Required files at the root
 
@@ -230,7 +317,7 @@ app.get('/ready', (req, res) => res.sendStatus(200));
 
 ---
 
-## 6. How deployment works
+## 7. How deployment works
 
 ### Deploy to dev (automatic)
 
@@ -265,27 +352,15 @@ app.get('/ready', (req, res) => res.sendStatus(200));
 
 ---
 
-## 7. Runner requirements
+## 8. Runner requirements
 
-The `build` job requires a runner tagged `dind` configured for BuildKit rootless.
+The pipeline uses **Kaniko** by default. Kaniko builds Docker images entirely inside the container, without a Docker daemon or any special kernel permissions. It works on EPITA's shared runners and any standard GitLab runner — no configuration needed.
 
-**Runner prerequisites:**
-- User namespaces enabled: `/proc/sys/kernel/unprivileged_userns_clone = 1`
-- Overlayfs available for the OCI worker
-
-If user namespaces are not available on your runner, override the variable in
-your app's `.gitlab-ci.yml`:
-
-```yaml
-build:
-  extends: .build
-  variables:
-    BUILDKITD_FLAGS: "--oci-worker-no-process-sandbox --oci-worker-snapshotter=native"
-```
+The error `operation not permitted` / `failed to start the child` means a previous version of the pipeline was using BuildKit rootless, which requires user namespaces. Kaniko does not have this requirement. If you see that error, make sure you are on the latest version of this template (`ref: main`).
 
 ---
 
-## 8. GitOps config repo structure
+## 9. GitOps config repo structure
 
 The config repo (watched by ArgoCD) must have this layout:
 
@@ -314,7 +389,7 @@ images:
 
 ---
 
-## 9. FAQ — Common issues
+## 10. FAQ — Common issues
 
 **`lint-eslint` fails: "Cannot find module 'eslint'"**
 
@@ -339,9 +414,9 @@ Your `package.json` has no `lint` script. Add:
 
 ---
 
-**`build` fails: "user namespaces not enabled"**
+**`build` fails: "operation not permitted" / "failed to start the child"**
 
-The runner doesn't have user namespaces. See [section 7](#7-runner-requirements).
+This was the BuildKit rootless error. Make sure your `.gitlab-ci.yml` uses `ref: main` (the latest template) — the pipeline now uses Kaniko by default and this error no longer occurs.
 
 ---
 
@@ -357,7 +432,7 @@ Next steps:
 
 **`update-config-dev` fails: "required variable CONFIG_REPO_TOKEN is not set"**
 
-The `CONFIG_REPO_TOKEN` variable is not configured. See [section 3](#3-cicd-variables-you-must-configure).
+The `CONFIG_REPO_TOKEN` variable is not configured. See [section 4](#4-cicd-variables-you-must-configure).
 
 ---
 
