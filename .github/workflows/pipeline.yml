@@ -40,10 +40,6 @@ on:
         required: true
         description: "PAT with write access to the config repository"
 
-env:
-  IMAGE_REF: ghcr.io/${{ github.repository_owner }}/${{ inputs.app_name }}:${{ github.sha }}
-  CACHE_REF: ghcr.io/${{ github.repository_owner }}/cache:${{ inputs.app_name }}
-
 jobs:
 
   # ---------------------------------------------------------------------------
@@ -216,6 +212,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute lowercase image refs
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_REF=ghcr.io/${OWNER}/${{ inputs.app_name }}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "CACHE_REF=ghcr.io/${OWNER}/cache:${{ inputs.app_name }}" >> $GITHUB_ENV
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -241,6 +243,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute lowercase image refs
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_REF=ghcr.io/${OWNER}/${{ inputs.app_name }}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "CACHE_REF=ghcr.io/${OWNER}/cache:${{ inputs.app_name }}" >> $GITHUB_ENV
 
       - name: Pull image
         run: docker pull "$IMAGE_REF"
@@ -295,6 +303,7 @@ jobs:
           PKG: ${{ inputs.app_name }}
           TAG: ${{ github.sha }}
         run: |
+          ORG=$(echo "$ORG" | tr '[:upper:]' '[:lower:]')
           echo "[cleanup] image to remove: ghcr.io/${ORG}/${PKG}:${TAG}"
 
           VERSION_ID=$(
