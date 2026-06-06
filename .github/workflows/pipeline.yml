@@ -357,8 +357,9 @@ jobs:
 
           AUTHED_URL=$(echo "${CONFIG_REPO_URL}" | sed "s|https://|https://x-access-token:${CONFIG_REPO_TOKEN}@|")
           git clone --depth=1 "${AUTHED_URL}" config-repo
-          cd config-repo/apps/${APP_NAME}/overlays/dev
+          cd "config-repo/apps/${APP_NAME}/overlays/dev"
 
+          # shellcheck disable=SC2001
           sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" kustomization.yaml
 
           git add kustomization.yaml
@@ -399,8 +400,9 @@ jobs:
 
           AUTHED_URL=$(echo "${CONFIG_REPO_URL}" | sed "s|https://|https://x-access-token:${CONFIG_REPO_TOKEN}@|")
           git clone --depth=1 "${AUTHED_URL}" config-repo
-          cd config-repo/apps/${APP_NAME}/overlays/prod
+          cd "config-repo/apps/${APP_NAME}/overlays/prod"
 
+          # shellcheck disable=SC2001
           sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" kustomization.yaml
 
           git add kustomization.yaml
