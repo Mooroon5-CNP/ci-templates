@@ -1,7 +1,7 @@
-# ci-templates — GitLab CI Pipeline for Node.js/Express Apps (CNP)
+# ci-templates — GitHub Actions Pipeline for Node.js/Express Apps (CNP)
 
 This repo contains the reusable CI pipeline for the CNP internal platform.
-**Include it once in your application repo and get a full secure pipeline — no copy-pasting.**
+**Reference it once in your application repo and get a full secure pipeline — no copy-pasting.**
 
 A working example app you can use to test the pipeline end-to-end lives in [test_app/](test_app/).
 
@@ -12,7 +12,7 @@ A working example app you can use to test the pipeline end-to-end lives in [test
 1. [What does this pipeline do?](#1-what-does-this-pipeline-do)
 2. [Required setup checklist](#2-required-setup-checklist)
 3. [How to use it in your app](#3-how-to-use-it-in-your-app)
-4. [CI/CD variables you must configure](#4-cicd-variables-you-must-configure)
+4. [Secrets you must configure](#4-secrets-you-must-configure)
 5. [What each stage checks](#5-what-each-stage-checks)
 6. [What your project must have](#6-what-your-project-must-have)
 7. [How deployment works](#7-how-deployment-works)
@@ -50,8 +50,8 @@ Before the pipeline can run on a new app, four things must exist.
 
 | # | What | Who | When |
 |---|---|---|---|
-| 1 | `CONFIG_REPO_TOKEN` CI/CD variable | App team lead or admin | Once per app repo |
-| 2 | No runner setup needed — the pipeline uses Kaniko by default | — | Nothing to do |
+| 1 | `CONFIG_REPO_TOKEN` GitHub secret | App team lead or admin | Once per app repo |
+| 2 | No runner setup needed — the pipeline uses GitHub-hosted runners by default | — | Nothing to do |
 | 3 | `prod` branch created and protected in your app repo | App team lead | Once per app repo |
 | 4 | Kustomize overlay structure in the GitOps config repo | Platform/infra team | Once per app |
 
@@ -59,30 +59,28 @@ Before the pipeline can run on a new app, four things must exist.
 
 ### 1 — `CONFIG_REPO_TOKEN`
 
-The pipeline pushes the new image tag to the GitOps config repo after each build. It needs a token with write access to do that. Developers never see the token — it is stored encrypted in GitLab and injected automatically at runtime.
+The pipeline pushes the new image tag to the GitOps config repo after each build. It needs a token with write access to do that. Developers never see the token — it is stored encrypted in GitHub and injected automatically at runtime.
 
-**Who sets this up:** a team lead or GitLab admin, once, before the first push.
+**Who sets this up:** a team lead or GitHub admin, once, before the first push.
 
 Steps:
-1. Open the **GitOps config repo** on GitLab → **Settings → Access Tokens → Add new token**
+1. Go to GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**
    - Name: `ci-pipeline-bot`
-   - Role: **Developer**
-   - Scope: **`write_repository`**
+   - Repository access: **Only selected repositories** → select the GitOps config repo
+   - Permissions: **Repository permissions → Contents → Read and write**
    - Expiry: 1 year from today
 2. **Copy the token value** — it is shown only once
-3. Open your **app repo** → **Settings → CI/CD → Variables → Add variable**
-   - Key: `CONFIG_REPO_TOKEN`
+3. Open your **app repo** → **Settings → Secrets and variables → Actions → New repository secret**
+   - Name: `CONFIG_REPO_TOKEN`
    - Value: the token you just copied
-   - Masked: ✅ Yes
-   - Protected: ✅ Yes
 
-> **Tip:** if all your app repos are in the same GitLab group, set `CONFIG_REPO_TOKEN` at the **group level** once — every repo in the group inherits it automatically and you never have to repeat this step.
+> **Tip:** if all your app repos are in the same GitHub organization, set `CONFIG_REPO_TOKEN` as an **organization secret** once — every repo in the org inherits it automatically and you never have to repeat this step.
 
 ---
 
 ### 2 — Runners: nothing to do
 
-The pipeline uses **Kaniko** to build Docker images. Kaniko runs entirely inside the container — it does not need a Docker daemon, privileged mode, or any special runner configuration. It works on EPITA's shared runners and any standard GitLab runner out of the box.
+The pipeline uses **GitHub-hosted runners** (`ubuntu-latest`) and **Kaniko** to build Docker images. Kaniko runs entirely inside the container — it does not need a Docker daemon, privileged mode, or any special runner configuration.
 
 You do not need to install, configure, or tag any runner.
 
@@ -90,7 +88,7 @@ You do not need to install, configure, or tag any runner.
 
 ### 3 — `prod` branch
 
-The pipeline only runs on `main` and `prod` branches. The `prod` branch must exist and be **protected** (requires a Merge Request — no direct push allowed).
+The pipeline only runs on `main` and `prod` branches. The `prod` branch must exist and be **protected** (requires a Pull Request — no direct push allowed).
 
 ```bash
 # In your app repo, run once:
@@ -98,10 +96,11 @@ git checkout -b prod
 git push origin prod
 ```
 
-Then on GitLab: **Settings → Repository → Protected branches**
-- Branch: `prod`
-- Allowed to merge: Maintainers
-- Allowed to push: No one
+Then on GitHub: **Settings → Branches → Add branch protection rule**
+- Branch name pattern: `prod`
+- Require a pull request before merging: ✅
+- Require approvals: ✅ (at least 1)
+- Restrict who can push to matching branches: ✅
 
 > Without this, pushing to `prod` will either be blocked or won't trigger the production pipeline.
 
@@ -109,10 +108,10 @@ Then on GitLab: **Settings → Repository → Protected branches**
 
 ### 4 — Kustomize structure in the GitOps config repo
 
-The pipeline updates image tags in the `k8s-config` repo. That repo must contain this directory structure for each app (created once by the platform team):
+The pipeline updates image tags in the `config-repo` repository. That repo must contain this directory structure for each app (created once by the platform team):
 
 ```
-k8s-config/
+config-repo/
   apps/
     <app_name>/            ← must match your app_name input exactly
       overlays/
@@ -126,38 +125,42 @@ Each `kustomization.yaml` must contain a `newTag:` line (the pipeline replaces i
 
 ---
 
-### Step 1 — Copy the configuration file
+## 3. How to use it in your app
 
-In **your application repo**, create `.gitlab-ci.yml` at the root.
-Copy the content from [example-app/.gitlab-ci.yml](example-app/.gitlab-ci.yml) and fill in the two values below.
+### Step 1 — Create the workflow file
+
+In **your application repo**, create `.github/workflows/ci.yml`.
+Copy the content below and fill in the values shown.
 
 ```yaml
-workflow:
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_COMMIT_BRANCH == "prod"'
+name: CI
 
-include:
-  - project: 'my_project/ci-templates' # Change this
-    ref: main                  # pin to a release tag in production: ref: v1.0.0
-    file: 'pipeline.yml'
-    inputs:
+on:
+  push:
+    branches: [main, prod]
+
+jobs:
+  pipeline:
+    uses: Mooroon5-CNP/ci-templates/.github/workflows/pipeline.yml@main
+    # pin to a release tag in production: @v1.0.0
+    with:
       app_name: "my-app"                   # ← CHANGE THIS
       app_port: "8080"                     # ← port your app listens on
-      config_repo_url: "https://gitlab.example.com/platform/k8s-config.git"  # ← CHANGE THIS
+      config_repo_url: "https://github.com/Mooroon5-CNP/config-repo.git"  # ← CHANGE THIS
+    secrets: inherit
 ```
 
 ### Step 2 — Fill in the inputs
 
 | Field | What to put |
 |---|---|
-| `app_name` | Your app name. Must match the directory in `k8s-config/apps/<app_name>/` |
+| `app_name` | Your app name. Must match the directory in `config-repo/apps/<app_name>/` |
 | `app_port` | The port your app listens on (same as `EXPOSE` in your Dockerfile) |
 | `config_repo_url` | The HTTPS URL of the GitOps repo watched by ArgoCD |
 
-### Step 3 — Set CI/CD variables in GitLab
+### Step 3 — Configure GitHub repository secrets
 
-→ See [section 4](#4-cicd-variables-you-must-configure)
+→ See [section 4](#4-secrets-you-must-configure)
 
 ### Step 4 — Make sure your project meets the requirements
 
@@ -165,40 +168,42 @@ include:
 
 ### Step 5 — Push and watch
 
-Push to `main`. In GitLab go to your project → **CI/CD → Pipelines** to see it run.
+Push to `main`. On GitHub go to your repository → **Actions** to see it run.
 
 ---
 
-## 4. CI/CD variables you must configure
+## 4. Secrets you must configure
 
-> **Who does this?** A team lead or GitLab admin does this **once per application repo**, before the first pipeline run. Individual developers never need to touch tokens or variables.
+> **Who does this?** A team lead or GitHub admin does this **once per application repo**, before the first workflow run. Individual developers never need to touch tokens or secrets.
 
-### Variables to add to your application repo
+### Secrets to add to your application repo
 
-Your app repo → **Settings** → **CI/CD** → **Variables** → **Add variable**
+Your app repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
 
-| Variable | Masked | Protected | Value |
-|---|---|---|---|
-| `CONFIG_REPO_TOKEN` | ✅ Yes | ✅ Yes | The token created in step below — lets the pipeline push the new image tag to the GitOps config repo |
+| Secret | Value |
+|---|---|
+| `CONFIG_REPO_TOKEN` | The fine-grained PAT created in step below — lets the pipeline push the new image tag to the GitOps config repo |
 
-> **These variables are injected automatically by GitLab — nothing to do:**
-> `CI_REGISTRY`, `CI_REGISTRY_USER`, `CI_REGISTRY_IMAGE`, `CI_REGISTRY_PASSWORD`,
-> `CI_JOB_TOKEN`, `CI_PROJECT_ID`, `CI_COMMIT_SHORT_SHA`
+> **These values are provided automatically by GitHub Actions — nothing to do:**
+> `github.sha` (commit SHA — use `${GITHUB_SHA::7}` for the short 7-char form),
+> `github.workspace` (project dir), `github.ref_name` (branch name),
+> `ghcr.io` (container registry host), `github.actor` (registry login user),
+> `secrets.GITHUB_TOKEN` (registry password — auto-injected by GitHub)
 
 ### How to create the token (admin, one-time)
 
 This token authorizes the pipeline to write to the **GitOps config repo** (the repo that holds your Kubernetes manifests, not your app code).
 
-1. Open the **GitOps config repo** on GitLab
-2. **Settings** → **Access Tokens** → **Add new token**
+1. Go to GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens**
+2. Click **Generate new token**
 3. Name: `ci-pipeline-bot` (just a label so you can identify it later)
 4. Description: `Used by CI pipeline to update kustomization image tags`
 5. Expiry: 1 year from today
-6. Role: **Developer**
-7. Scope: **`write_repository`** only
-8. Click **Create project access token**
+6. Repository access: **Only selected repositories** → select the GitOps config repo
+7. Permissions: **Repository permissions → Contents → Read and write**
+8. Click **Generate token**
 9. **Copy the token value** — it is shown only once
-10. Go to your **application repo** → Settings → CI/CD → Variables → add `CONFIG_REPO_TOKEN` with that value
+10. Go to your **application repo** → Settings → Secrets and variables → Actions → add `CONFIG_REPO_TOKEN` with that value
 
 ---
 
@@ -217,7 +222,7 @@ This token authorizes the pipeline to write to the **GitOps config repo** (the r
 |---|---|---|
 | `test` | Runs `npm test` | Any test failure |
 
-JUnit XML reports (`test-results.xml`) are uploaded as artifacts and displayed inline on MRs when present.
+JUnit XML reports (`test-results.xml`) are uploaded as artifacts and displayed inline on PRs when present.
 
 ### `scan-secu` — Security before the build
 
@@ -230,9 +235,9 @@ JUnit XML reports (`test-results.xml`) are uploaded as artifacts and displayed i
 
 | Job | What it does |
 |---|---|
-| `build` | Builds the Docker image with BuildKit (rootless, no DinD) and pushes it to the GitLab Container Registry tagged with the commit SHA |
+| `build` | Builds the Docker image with Kaniko (rootless, no DinD) and pushes it to the GitHub Container Registry (`ghcr.io`) tagged with the commit SHA |
 
-The image is **never tagged `latest`** — always a short commit SHA (e.g. `a1b2c3d4`).
+The image is **never tagged `latest`** — always a short commit SHA (e.g. `a1b2c3d`).
 
 ### `push` — Image scan + deployment
 
@@ -241,7 +246,7 @@ The image is **never tagged `latest`** — always a short commit SHA (e.g. `a1b2
 | `scan-image` | Trivy scans the built image | CRITICAL CVE in the image |
 | `cleanup-on-scan-failure` | Deletes the image from the registry if `scan-image` fails | — |
 | `update-config-dev` | Updates `newTag` in `overlays/dev/kustomization.yaml` — ArgoCD deploys to dev | Only runs on `main`, automatic |
-| `update-config-prod` | Updates `newTag` in `overlays/prod/kustomization.yaml` | Only runs on `prod`, **manual click required** |
+| `update-config-prod` | Updates `newTag` in `overlays/prod/kustomization.yaml` | Only runs on `prod`, **manual approval required** |
 
 ---
 
@@ -254,7 +259,9 @@ my-app/
 ├── Dockerfile              ← required
 ├── package.json            ← must have "lint" and "test" scripts
 ├── package-lock.json       ← required (the pipeline uses npm ci)
-└── .gitlab-ci.yml          ← the file you copied from example-app/
+└── .github/
+    └── workflows/
+        └── ci.yml          ← the workflow file you created in step 1
 ```
 
 ### `package.json` — required scripts
@@ -326,7 +333,7 @@ app.get('/ready', (req, res) => res.sendStatus(200));
 2. git merge my-feature-branch
 3. git push origin main
          ↓
-   GitLab pipeline starts automatically
+   GitHub Actions workflow starts automatically
          ↓
    All stages pass → update-config-dev updates overlays/dev/
          ↓
@@ -336,16 +343,16 @@ app.get('/ready', (req, res) => res.sendStatus(200));
 ### Deploy to prod (manual)
 
 ```
-1. Open a Merge Request: main → prod on GitLab
+1. Open a Pull Request: main → prod on GitHub
 2. Get it approved and merged
          ↓
-   GitLab pipeline starts on the prod branch
+   GitHub Actions workflow starts on the prod branch
          ↓
    lint / test / scan-secu / build / scan-image all run automatically
          ↓
-   update-config-prod WAITS for a human to click Run
+   update-config-prod WAITS for a human to approve
          ↓
-   GitLab → CI/CD → Pipelines → click the job → click ▶ Run
+   GitHub → Actions → workflow run → Review deployments → Approve and deploy
          ↓
    ArgoCD syncs the prod cluster
 ```
@@ -354,9 +361,7 @@ app.get('/ready', (req, res) => res.sendStatus(200));
 
 ## 8. Runner requirements
 
-The pipeline uses **Kaniko** by default. Kaniko builds Docker images entirely inside the container, without a Docker daemon or any special kernel permissions. It works on EPITA's shared runners and any standard GitLab runner — no configuration needed.
-
-The error `operation not permitted` / `failed to start the child` means a previous version of the pipeline was using BuildKit rootless, which requires user namespaces. Kaniko does not have this requirement. If you see that error, make sure you are on the latest version of this template (`ref: main`).
+The pipeline uses **GitHub-hosted runners** (`ubuntu-latest`) and **Kaniko** by default. Kaniko builds Docker images entirely inside the container, without a Docker daemon or any special kernel permissions. It works on GitHub-hosted runners and any self-hosted runner — no configuration needed.
 
 ---
 
@@ -365,7 +370,7 @@ The error `operation not permitted` / `failed to start the child` means a previo
 The config repo (watched by ArgoCD) must have this layout:
 
 ```
-k8s-config/
+config-repo/
   apps/
     <app_name>/           ← must match your app_name input exactly
       overlays/
@@ -383,7 +388,7 @@ kind: Kustomization
 resources:
   - ../../base
 images:
-  - name: registry.gitlab.example.com/my-org/my-app
+  - name: ghcr.io/mooroon5-cnp/my-app
     newTag: placeholder      # ← the pipeline replaces this value
 ```
 
@@ -414,9 +419,9 @@ Your `package.json` has no `lint` script. Add:
 
 ---
 
-**`build` fails: "operation not permitted" / "failed to start the child"**
+**`update-config-dev` fails: "required secret CONFIG_REPO_TOKEN is not set"**
 
-This was the BuildKit rootless error. Make sure your `.gitlab-ci.yml` uses `ref: main` (the latest template) — the pipeline now uses Kaniko by default and this error no longer occurs.
+The `CONFIG_REPO_TOKEN` secret is not configured. See [section 4](#4-secrets-you-must-configure).
 
 ---
 
@@ -430,20 +435,13 @@ Next steps:
 
 ---
 
-**`update-config-dev` fails: "required variable CONFIG_REPO_TOKEN is not set"**
-
-The `CONFIG_REPO_TOKEN` variable is not configured. See [section 4](#4-cicd-variables-you-must-configure).
-
----
-
 **I want to pin the template version to avoid breaking changes**
 
-Replace `ref: main` with a specific tag:
+Replace `@main` with a specific tag:
 ```yaml
-include:
-  - project: 'nazim.lameche/ci-templates'
-    ref: v1.0.0    # ← pin to a specific release
-    file: 'pipeline.yml'
+jobs:
+  pipeline:
+    uses: Mooroon5-CNP/ci-templates/.github/workflows/pipeline.yml@v1.0.0
 ```
 
 ---
@@ -452,18 +450,19 @@ include:
 
 ```
 ci-templates/
-  pipeline.yml                   # Entry point — include this in your app repos
+  .github/
+    workflows/
+      pipeline.yml               # Entry point — reference this in your app repos
   templates/
     .lint.yml                    # ESLint + Hadolint
     .test.yml                    # npm test
     .scan-secu.yml               # Gitleaks + Trivy filesystem
-    .build.yml                   # BuildKit rootless build
+    .build.yml                   # Kaniko build
     .scan-image.yml              # Trivy image scan
     .cleanup.yml                 # Registry cleanup on scan failure
     .update-config.yml           # GitOps promotion (dev auto, prod manual)
   example-app/
-    .gitlab-ci.yml               # Copy this into your app repo
+    .github/workflows/ci.yml     # Copy this into your app repo
   test_app/                      # Working example app — use it to test the pipeline
-  .gitlab-ci.yml                 # Self-validation of this repo
   README.md                      # This file
 ```

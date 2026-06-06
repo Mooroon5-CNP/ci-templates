@@ -1,0 +1,49 @@
+# ci.yml — Self-validation pipeline for the ci-templates repository.
+#
+# Two goals:
+#   1. Catch YAML syntax errors in all workflow files before they reach consumers.
+#   2. Validate GitHub Actions schema with actionlint so broken pipeline logic
+#      is caught before any application repo pulls from main.
+
+name: CI Templates Self-Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  yamllint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint workflow YAML
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/data" \
+            -w /data \
+            cytopia/yamllint:latest \
+            --config-file .yamllint.yml \
+            .github/workflows/pipeline.yml \
+            .github/workflows/ci.yml \
+            example-app/.github/workflows/ci.yml
+
+  actionlint:
+    runs-on: ubuntu-latest
+    needs: [yamllint]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate GitHub Actions syntax
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" \
+            rhysd/actionlint:latest \
+            -color

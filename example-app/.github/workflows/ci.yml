@@ -1,0 +1,44 @@
+# ci.yml — Copy this file into YOUR application repository.
+#
+# Quick start (4 steps):
+#   1. Copy this file to .github/workflows/ci.yml in your app repo
+#   2. Update app_name, app_port, and config_repo_url below
+#   3. In GitHub: Settings → Secrets and variables → Actions → add CONFIG_REPO_TOKEN
+#   4. Push to main — the pipeline starts automatically
+#
+# The pipeline runs on push to main (→ dev deploy) and prod (→ prod deploy, manual gate).
+# Feature branches do NOT trigger this pipeline — add your own lightweight checks if needed.
+#
+# Full documentation: README.md in the ci-templates repo
+
+name: CI
+
+on:
+  push:
+    branches: [main, prod]
+
+# packages: write is required so the pipeline can push and, if needed, delete
+# images from ghcr.io on behalf of the Mooroon5-CNP organisation.
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  pipeline:
+    uses: Mooroon5-CNP/ci-templates/.github/workflows/pipeline.yml@main
+    with:
+      # ── app_name ────────────────────────────────────────────────────────────
+      # Used as the Docker image name in ghcr.io and the Kustomize overlay path.
+      # Use lowercase letters, numbers, and hyphens only.
+      app_name: "exemple-app-cnp"
+
+      # ── app_port ────────────────────────────────────────────────────────────
+      # TCP port your container listens on. Must match EXPOSE in your Dockerfile.
+      app_port: "8080"
+
+      # ── config_repo_url ─────────────────────────────────────────────────────
+      # HTTPS URL of the GitOps repository that ArgoCD watches.
+      # The pipeline will clone this repo, patch newTag, and push.
+      config_repo_url: "https://github.com/Mooroon5-CNP/config-repo"
+    secrets:
+      CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}

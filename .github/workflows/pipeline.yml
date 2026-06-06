@@ -1,0 +1,410 @@
+# pipeline.yml — Reusable CI/CD pipeline for the CNP internal platform.
+#
+# Usage in any application repository:
+#
+#   jobs:
+#     pipeline:
+#       uses: Mooroon5-CNP/ci-templates/.github/workflows/pipeline.yml@main
+#       with:
+#         app_name: "my-app"
+#         app_port: "3000"
+#         config_repo_url: "https://github.com/Mooroon5-CNP/config-repo"
+#       secrets:
+#         CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+#
+# The calling workflow must grant:
+#   permissions:
+#     packages: write
+#     contents: read
+
+name: CNP Application Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        type: string
+        required: true
+        description: "Application name — used as image name and Kustomize overlay directory"
+      app_port:
+        type: string
+        required: false
+        default: "8080"
+        description: "Port the application listens on inside the container"
+      config_repo_url:
+        type: string
+        required: true
+        description: "HTTPS URL of the GitOps config repository"
+    secrets:
+      CONFIG_REPO_TOKEN:
+        required: true
+        description: "PAT with write access to the config repository"
+
+env:
+  IMAGE_REF: ghcr.io/${{ github.repository_owner }}/${{ inputs.app_name }}:${{ github.sha }}
+  CACHE_REF: ghcr.io/${{ github.repository_owner }}/cache:${{ inputs.app_name }}
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Stage: lint — parallel
+  # ---------------------------------------------------------------------------
+
+  lint-eslint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Verify lockfile
+        run: |
+          if [ ! -f package-lock.json ]; then
+            echo "[lint-eslint] ERROR: package-lock.json not found." >&2
+            echo "[lint-eslint] Run 'npm install' locally and commit the lockfile." >&2
+            exit 1
+          fi
+
+      - run: npm ci --prefer-offline
+
+      - name: ESLint
+        run: |
+          if ! npm run lint -- --help > /dev/null 2>&1; then
+            if ! npx --no-install eslint --version > /dev/null 2>&1; then
+              echo "[lint-eslint] ERROR: eslint not found in node_modules." >&2
+              exit 1
+            fi
+          fi
+          npm run lint
+
+  lint-hadolint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Dockerfile
+        run: |
+          if [ ! -f Dockerfile ]; then
+            echo "[lint-hadolint] ERROR: Dockerfile not found at repository root." >&2
+            exit 1
+          fi
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            hadolint/hadolint:latest-alpine \
+            hadolint Dockerfile
+
+  # ---------------------------------------------------------------------------
+  # Stage: test
+  # ---------------------------------------------------------------------------
+
+  test:
+    runs-on: ubuntu-latest
+    needs: [lint-eslint, lint-hadolint]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci --prefer-offline
+
+      - run: npm test
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Stage: scan-secu — parallel
+  # ---------------------------------------------------------------------------
+
+  scan-secrets:
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for leaked secrets
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" \
+            zricethezav/gitleaks:latest \
+            detect \
+            --source="/repo" \
+            --report-format=json \
+            --report-path=/repo/gitleaks-report.json \
+            --redact \
+            --verbose
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          retention-days: 7
+
+  scan-deps:
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan deps — CRITICAL (blocking)
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            aquasec/trivy:latest fs \
+            --scanners vuln \
+            --severity CRITICAL \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --format table \
+            /workspace
+
+      - name: Scan deps — HIGH/MEDIUM (non-blocking)
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            aquasec/trivy:latest fs \
+            --scanners vuln \
+            --severity HIGH,MEDIUM \
+            --exit-code 0 \
+            --ignore-unfixed \
+            --format table \
+            /workspace || true
+
+  # ---------------------------------------------------------------------------
+  # Stage: build
+  # ---------------------------------------------------------------------------
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [scan-secrets, scan-deps]
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_REF }}
+          build-args: APP_PORT=${{ inputs.app_port }}
+          cache-from: type=registry,ref=${{ env.CACHE_REF }}
+          cache-to: type=registry,ref=${{ env.CACHE_REF }},mode=max
+
+  # ---------------------------------------------------------------------------
+  # Stage: push — scan image
+  # ---------------------------------------------------------------------------
+
+  scan-image:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      packages: read
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image
+        run: docker pull "$IMAGE_REF"
+
+      - name: Scan image — CRITICAL (blocking)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            aquasec/trivy:latest image \
+            --severity CRITICAL \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --format table \
+            --output /workspace/trivy-report.txt \
+            "$IMAGE_REF"
+          cat trivy-report.txt
+
+      - name: Scan image — HIGH/MEDIUM (non-blocking)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image \
+            --severity HIGH,MEDIUM \
+            --exit-code 0 \
+            --ignore-unfixed \
+            --format table \
+            "$IMAGE_REF" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-report
+          path: trivy-report.txt
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Stage: push — cleanup on scan failure
+  # ---------------------------------------------------------------------------
+
+  cleanup-on-scan-failure:
+    runs-on: ubuntu-latest
+    needs: [scan-image]
+    if: ${{ always() && needs.scan-image.result == 'failure' }}
+    permissions:
+      packages: write
+    steps:
+      - name: Remove vulnerable image from GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          PKG: ${{ inputs.app_name }}
+          TAG: ${{ github.sha }}
+        run: |
+          echo "[cleanup] image to remove: ghcr.io/${ORG}/${PKG}:${TAG}"
+
+          VERSION_ID=$(
+            curl -s \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/${ORG}/packages/container/${PKG}/versions" \
+            | jq --arg tag "${TAG}" \
+                 '.[] | select(.metadata.container.tags != null and (.metadata.container.tags[] == $tag)) | .id' \
+            | head -1
+          )
+
+          if [ -z "$VERSION_ID" ]; then
+            echo "[cleanup] WARNING: version with tag ${TAG} not found — nothing to delete"
+            exit 0
+          fi
+
+          HTTP_STATUS=$(
+            curl -s -o /dev/null -w "%{http_code}" \
+              -X DELETE \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/${ORG}/packages/container/${PKG}/versions/${VERSION_ID}"
+          )
+
+          case "$HTTP_STATUS" in
+            200|204) echo "[cleanup] version ${VERSION_ID} (tag: ${TAG}) deleted" ;;
+            404)     echo "[cleanup] version not found — already removed or never pushed" ;;
+            *)       echo "[cleanup] ERROR: unexpected HTTP ${HTTP_STATUS}" >&2; exit 1 ;;
+          esac
+
+  # ---------------------------------------------------------------------------
+  # Stage: push — GitOps config update (dev, auto on main)
+  # ---------------------------------------------------------------------------
+
+  update-config-dev:
+    runs-on: ubuntu-latest
+    needs: [scan-image]
+    if: ${{ github.ref == 'refs/heads/main' && needs.scan-image.result == 'success' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Promote to dev
+        env:
+          CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+          CONFIG_REPO_URL: ${{ inputs.config_repo_url }}
+          APP_NAME: ${{ inputs.app_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          for var in CONFIG_REPO_TOKEN COMMIT_SHA APP_NAME CONFIG_REPO_URL; do
+            eval "val=\$$var"
+            if [ -z "$val" ]; then
+              echo "[update-config-dev] ERROR: required variable '$var' is not set" >&2
+              exit 1
+            fi
+          done
+
+          git config --global user.email "ci-bot@github.local"
+          git config --global user.name "GitHub Actions Bot"
+
+          AUTHED_URL=$(echo "${CONFIG_REPO_URL}" | sed "s|https://|https://x-access-token:${CONFIG_REPO_TOKEN}@|")
+          git clone --depth=1 "${AUTHED_URL}" config-repo
+          cd config-repo/apps/${APP_NAME}/overlays/dev
+
+          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" kustomization.yaml
+
+          git add kustomization.yaml
+          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA::7} to dev [ci skip]"
+
+          git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
+          git push "${AUTHED_URL}" HEAD
+
+  # ---------------------------------------------------------------------------
+  # Stage: push — GitOps config update (prod, manual via environment protection)
+  # ---------------------------------------------------------------------------
+
+  update-config-prod:
+    runs-on: ubuntu-latest
+    needs: [scan-image]
+    if: ${{ github.ref == 'refs/heads/prod' && needs.scan-image.result == 'success' }}
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Promote to prod
+        env:
+          CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+          CONFIG_REPO_URL: ${{ inputs.config_repo_url }}
+          APP_NAME: ${{ inputs.app_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          for var in CONFIG_REPO_TOKEN COMMIT_SHA APP_NAME CONFIG_REPO_URL; do
+            eval "val=\$$var"
+            if [ -z "$val" ]; then
+              echo "[update-config-prod] ERROR: required variable '$var' is not set" >&2
+              exit 1
+            fi
+          done
+
+          git config --global user.email "ci-bot@github.local"
+          git config --global user.name "GitHub Actions Bot"
+
+          AUTHED_URL=$(echo "${CONFIG_REPO_URL}" | sed "s|https://|https://x-access-token:${CONFIG_REPO_TOKEN}@|")
+          git clone --depth=1 "${AUTHED_URL}" config-repo
+          cd config-repo/apps/${APP_NAME}/overlays/prod
+
+          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" kustomization.yaml
+
+          git add kustomization.yaml
+          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA::7} to prod [ci skip]"
+
+          git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
+          git push "${AUTHED_URL}" HEAD
