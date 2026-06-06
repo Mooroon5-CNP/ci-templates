@@ -355,11 +355,10 @@ jobs:
           git config --global user.email "ci-bot@github.local"
           git config --global user.name "GitHub Actions Bot"
 
-          AUTHED_URL=$(echo "${CONFIG_REPO_URL}" | sed "s|https://|https://x-access-token:${CONFIG_REPO_TOKEN}@|")
+          AUTHED_URL="https://x-access-token:${CONFIG_REPO_TOKEN}@${CONFIG_REPO_URL#https://}"
           git clone --depth=1 "${AUTHED_URL}" config-repo
           cd "config-repo/apps/${APP_NAME}/overlays/dev"
 
-          # shellcheck disable=SC2001
           sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" kustomization.yaml
 
           git add kustomization.yaml
@@ -398,11 +397,10 @@ jobs:
           git config --global user.email "ci-bot@github.local"
           git config --global user.name "GitHub Actions Bot"
 
-          AUTHED_URL=$(echo "${CONFIG_REPO_URL}" | sed "s|https://|https://x-access-token:${CONFIG_REPO_TOKEN}@|")
+          AUTHED_URL="https://x-access-token:${CONFIG_REPO_TOKEN}@${CONFIG_REPO_URL#https://}"
           git clone --depth=1 "${AUTHED_URL}" config-repo
           cd "config-repo/apps/${APP_NAME}/overlays/prod"
 
-          # shellcheck disable=SC2001
           sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" kustomization.yaml
 
           git add kustomization.yaml
