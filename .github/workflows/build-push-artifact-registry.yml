@@ -1,0 +1,79 @@
+# build-push-artifact-registry.yml — Reusable workflow: build a Docker image and
+# push it to Google Artifact Registry via Workload Identity Federation (no JSON keys).
+#
+# Usage in any application repository:
+#
+#   jobs:
+#     build:
+#       uses: Mooroon5-CNP/ci-templates/.github/workflows/build-push-artifact-registry.yml@main
+#       with:
+#         image_name: "exemple-app-cnp"
+#         image_tag: ${{ github.sha }}
+#
+# The calling workflow must grant:
+#   permissions:
+#     id-token: write
+#     contents: read
+
+name: Build and Push to Artifact Registry
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        type: string
+        required: true
+        description: "Docker image name, e.g. exemple-app-cnp"
+      image_tag:
+        type: string
+        required: false
+        default: ${{ github.sha }}
+        description: "Docker image tag — defaults to the commit SHA"
+      context:
+        type: string
+        required: false
+        default: "."
+        description: "Docker build context path"
+      dockerfile:
+        type: string
+        required: false
+        default: "Dockerfile"
+        description: "Path to the Dockerfile"
+
+jobs:
+
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: >-
+            projects/199851303237/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-ci-sa@cnp-terraform.iam.gserviceaccount.com
+          token_format: access_token
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate Docker to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: europe-west9-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: |
+            europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry/${{ inputs.image_name }}:${{ inputs.image_tag }}
+            europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry/${{ inputs.image_name }}:latest
