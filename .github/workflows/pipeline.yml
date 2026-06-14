@@ -14,7 +14,7 @@
 #
 # The calling workflow must grant:
 #   permissions:
-#     packages: write
+#     id-token: write   # required for OIDC token exchange with GCP Workload Identity
 #     contents: read
 
 name: CNP Application Pipeline
@@ -25,7 +25,7 @@ on:
       app_name:
         type: string
         required: true
-        description: "Application name — used as image name and Kustomize overlay directory"
+        description: "Application name — used as image name and Cloud Run claim directory"
       app_port:
         type: string
         required: false
@@ -198,25 +198,38 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: [scan-secrets, scan-deps]
+    # id-token: write lets the runner obtain a short-lived OIDC token from GitHub,
+    # which google-github-actions/auth exchanges for a GCP access token via WIF.
+    # No JSON service-account key is stored anywhere.
     permissions:
-      packages: write
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: >-
+            projects/199851303237/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-ci-sa@cnp-terraform.iam.gserviceaccount.com
+          token_format: access_token
+
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: Authenticate Docker to Artifact Registry
+        uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: europe-west9-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
 
-      - name: Compute lowercase image refs
+      - name: Compute image refs
         run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "IMAGE_REF=ghcr.io/${OWNER}/${{ inputs.app_name }}:${{ github.sha }}" >> "$GITHUB_ENV"
-          echo "CACHE_REF=ghcr.io/${OWNER}/cache:${{ inputs.app_name }}" >> "$GITHUB_ENV"
+          REGISTRY="europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry"
+          echo "IMAGE_REF=${REGISTRY}/${{ inputs.app_name }}:${{ github.sha }}" >> "$GITHUB_ENV"
+          echo "CACHE_REF=${REGISTRY}/cache:${{ inputs.app_name }}" >> "$GITHUB_ENV"
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -236,19 +249,28 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
-      packages: read
+      id-token: write
     steps:
-      - uses: docker/login-action@v3
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        id: auth
+        uses: google-github-actions/auth@v2
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          workload_identity_provider: >-
+            projects/199851303237/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-ci-sa@cnp-terraform.iam.gserviceaccount.com
+          token_format: access_token
 
-      - name: Compute lowercase image refs
+      - name: Authenticate Docker to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: europe-west9-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Set image ref
         run: |
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "IMAGE_REF=ghcr.io/${OWNER}/${{ inputs.app_name }}:${{ github.sha }}" >> "$GITHUB_ENV"
-          echo "CACHE_REF=ghcr.io/${OWNER}/cache:${{ inputs.app_name }}" >> "$GITHUB_ENV"
+          REGISTRY="europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry"
+          echo "IMAGE_REF=${REGISTRY}/${{ inputs.app_name }}:${{ github.sha }}" >> "$GITHUB_ENV"
 
       - name: Pull image
         run: docker pull "$IMAGE_REF"
@@ -294,46 +316,28 @@ jobs:
     needs: [scan-image]
     if: ${{ always() && needs.scan-image.result == 'failure' }}
     permissions:
-      packages: write
+      id-token: write
     steps:
-      - name: Remove vulnerable image from GHCR
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: >-
+            projects/199851303237/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-ci-sa@cnp-terraform.iam.gserviceaccount.com
+
+      - name: Remove vulnerable image from Artifact Registry
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ORG: ${{ github.repository_owner }}
-          PKG: ${{ inputs.app_name }}
+          APP_NAME: ${{ inputs.app_name }}
           TAG: ${{ github.sha }}
         run: |
-          ORG=$(echo "$ORG" | tr '[:upper:]' '[:lower:]')
-          echo "[cleanup] image to remove: ghcr.io/${ORG}/${PKG}:${TAG}"
+          IMAGE="europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry/${APP_NAME}:${TAG}"
+          echo "[cleanup] image to remove: ${IMAGE}"
 
-          VERSION_ID=$(
-            curl -s \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/orgs/${ORG}/packages/container/${PKG}/versions" \
-            | jq --arg tag "${TAG}" \
-                 '.[] | select(.metadata.container.tags != null and (.metadata.container.tags[] == $tag)) | .id' \
-            | head -1
-          )
-
-          if [ -z "$VERSION_ID" ]; then
-            echo "[cleanup] WARNING: version with tag ${TAG} not found — nothing to delete"
-            exit 0
+          if gcloud artifacts docker images delete "${IMAGE}" --quiet; then
+            echo "[cleanup] ${IMAGE} deleted"
+          else
+            echo "[cleanup] WARNING: delete returned non-zero — image may not exist or was already removed"
           fi
-
-          HTTP_STATUS=$(
-            curl -s -o /dev/null -w "%{http_code}" \
-              -X DELETE \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/orgs/${ORG}/packages/container/${PKG}/versions/${VERSION_ID}"
-          )
-
-          case "$HTTP_STATUS" in
-            200|204) echo "[cleanup] version ${VERSION_ID} (tag: ${TAG}) deleted" ;;
-            404)     echo "[cleanup] version not found — already removed or never pushed" ;;
-            *)       echo "[cleanup] ERROR: unexpected HTTP ${HTTP_STATUS}" >&2; exit 1 ;;
-          esac
 
   # ---------------------------------------------------------------------------
   # Stage: push — GitOps config update (dev, auto on main)
@@ -366,11 +370,13 @@ jobs:
 
           AUTHED_URL="https://x-access-token:${CONFIG_REPO_TOKEN}@${CONFIG_REPO_URL#https://}"
           git clone --depth=1 "${AUTHED_URL}" config-repo
-          cd "config-repo/apps/${APP_NAME}/overlays/dev"
+          cd "config-repo/apps/${APP_NAME}/crossplane"
 
-          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" kustomization.yaml
+          sed -i -E \
+            "s|(europe-west9-docker\.pkg\.dev/cnp-terraform/cnp-registry/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
+            cloudrun-claim.yaml
 
-          git add kustomization.yaml
+          git add cloudrun-claim.yaml
           git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA::7} to dev [ci skip]"
 
           git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
@@ -408,11 +414,14 @@ jobs:
 
           AUTHED_URL="https://x-access-token:${CONFIG_REPO_TOKEN}@${CONFIG_REPO_URL#https://}"
           git clone --depth=1 "${AUTHED_URL}" config-repo
-          cd "config-repo/apps/${APP_NAME}/overlays/prod"
+          # TODO: separate dev/prod Cloud Run claims when multi-environment provisioning lands
+          cd "config-repo/apps/${APP_NAME}/crossplane"
 
-          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" kustomization.yaml
+          sed -i -E \
+            "s|(europe-west9-docker\.pkg\.dev/cnp-terraform/cnp-registry/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
+            cloudrun-claim.yaml
 
-          git add kustomization.yaml
+          git add cloudrun-claim.yaml
           git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA::7} to prod [ci skip]"
 
           git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
