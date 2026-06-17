@@ -17,10 +17,11 @@ on:
   push:
     branches: [main, prod]
 
-# packages: write is required so the pipeline can push and, if needed, delete
-# images from ghcr.io on behalf of the Mooroon5-CNP organisation.
+# id-token: write lets the runner obtain a short-lived OIDC token from GitHub,
+# which the reusable pipeline exchanges for a GCP access token via Workload Identity
+# Federation. No JSON service-account key is stored anywhere.
 permissions:
-  packages: write
+  id-token: write
   contents: read
 
 jobs:
