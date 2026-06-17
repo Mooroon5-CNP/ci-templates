@@ -370,14 +370,22 @@ jobs:
 
           AUTHED_URL="https://x-access-token:${CONFIG_REPO_TOKEN}@${CONFIG_REPO_URL#https://}"
           git clone --depth=1 "${AUTHED_URL}" config-repo
-          cd "config-repo/apps/${APP_NAME}/crossplane"
+          cd config-repo
 
-          sed -i -E \
-            "s|(europe-west9-docker\.pkg\.dev/cnp-terraform/cnp-registry/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
-            cloudrun-claim.yaml
+          # Update Kustomize overlay newTag for dev environment
+          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA:0:7}|" \
+            "apps/${APP_NAME}/overlays/dev/kustomization.yaml"
 
-          git add cloudrun-claim.yaml
-          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA::7} to dev [ci skip]"
+          # Update Crossplane claim (if it exists)
+          if [ -f "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml" ]; then
+            sed -i -E \
+              "s|(europe-west9-docker\.pkg\.dev/cnp-terraform/cnp-registry/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
+              "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
+            git add "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
+          fi
+
+          git add "apps/${APP_NAME}/overlays/dev/kustomization.yaml"
+          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to dev [ci skip]"
 
           git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
           git push "${AUTHED_URL}" HEAD
@@ -414,15 +422,22 @@ jobs:
 
           AUTHED_URL="https://x-access-token:${CONFIG_REPO_TOKEN}@${CONFIG_REPO_URL#https://}"
           git clone --depth=1 "${AUTHED_URL}" config-repo
-          # TODO: separate dev/prod Cloud Run claims when multi-environment provisioning lands
-          cd "config-repo/apps/${APP_NAME}/crossplane"
+          cd config-repo
 
-          sed -i -E \
-            "s|(europe-west9-docker\.pkg\.dev/cnp-terraform/cnp-registry/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
-            cloudrun-claim.yaml
+          # Update Kustomize overlay newTag for prod environment
+          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA:0:7}|" \
+            "apps/${APP_NAME}/overlays/prod/kustomization.yaml"
 
-          git add cloudrun-claim.yaml
-          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA::7} to prod [ci skip]"
+          # Update Crossplane claim (if it exists)
+          if [ -f "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml" ]; then
+            sed -i -E \
+              "s|(europe-west9-docker\.pkg\.dev/cnp-terraform/cnp-registry/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
+              "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
+            git add "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
+          fi
+
+          git add "apps/${APP_NAME}/overlays/prod/kustomization.yaml"
+          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to prod [ci skip]"
 
           git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
           git push "${AUTHED_URL}" HEAD
