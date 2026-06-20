@@ -433,7 +433,7 @@ jobs:
   update-config-dev:
     runs-on: ubuntu-latest
     needs: [scan-image]
-    if: ${{ github.ref == 'refs/heads/main' && needs.scan-image.result == 'success' }}
+    if: ${{ github.ref == 'refs/heads/main' && needs.scan-image.result == 'success' && inputs.target_cloud != 'aws' }}
     permissions:
       contents: read
     steps:
@@ -484,7 +484,7 @@ jobs:
   update-config-prod:
     runs-on: ubuntu-latest
     needs: [scan-image]
-    if: ${{ github.ref == 'refs/heads/prod' && needs.scan-image.result == 'success' }}
+    if: ${{ github.ref == 'refs/heads/prod' && needs.scan-image.result == 'success' && inputs.target_cloud != 'aws' }}
     environment: production
     permissions:
       contents: read
