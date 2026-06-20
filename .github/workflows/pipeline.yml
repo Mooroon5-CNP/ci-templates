@@ -228,9 +228,11 @@ jobs:
       - name: Compute image refs
         run: |
           REGISTRY="europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry"
-          echo "IMAGE_REF=${REGISTRY}/${{ inputs.app_name }}:${{ github.sha }}" >> "$GITHUB_ENV"
-          echo "CACHE_REF=${REGISTRY}/cache:${{ inputs.app_name }}" >> "$GITHUB_ENV"
-          echo "ECR_REF=562346647831.dkr.ecr.eu-west-3.amazonaws.com/${{ inputs.app_name }}:${{ github.sha }}" >> "$GITHUB_ENV"
+          {
+            echo "IMAGE_REF=${REGISTRY}/${{ inputs.app_name }}:${{ github.sha }}"
+            echo "CACHE_REF=${REGISTRY}/cache:${{ inputs.app_name }}"
+            echo "ECR_REF=562346647831.dkr.ecr.eu-west-3.amazonaws.com/${{ inputs.app_name }}:${{ github.sha }}"
+          } >> "$GITHUB_ENV"
 
       - name: Authenticate to AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v4
