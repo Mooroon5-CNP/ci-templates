@@ -528,3 +528,52 @@ jobs:
 
           git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
           git push "${AUTHED_URL}" HEAD
+
+  # ---------------------------------------------------------------------------
+  # Stage: push — GitOps config update (App Runner / AWS runtime)
+  # ---------------------------------------------------------------------------
+
+  update-config-aws:
+    runs-on: ubuntu-latest
+    needs: [scan-image]
+    if: ${{ github.ref == 'refs/heads/main' && needs.scan-image.result == 'success' && inputs.target_cloud != 'gcp' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Promote to App Runner
+        env:
+          CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+          CONFIG_REPO_URL: ${{ inputs.config_repo_url }}
+          APP_NAME: ${{ inputs.app_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          for var in CONFIG_REPO_TOKEN COMMIT_SHA APP_NAME CONFIG_REPO_URL; do
+            eval "val=\$$var"
+            if [ -z "$val" ]; then
+              echo "[update-config-aws] ERROR: required variable '$var' is not set" >&2
+              exit 1
+            fi
+          done
+
+          git config --global user.email "ci-bot@github.local"
+          git config --global user.name "GitHub Actions Bot"
+
+          AUTHED_URL="https://x-access-token:${CONFIG_REPO_TOKEN}@${CONFIG_REPO_URL#https://}"
+          git clone --depth=1 "${AUTHED_URL}" config-repo
+          cd config-repo
+
+          MANIFEST="apps/${APP_NAME}/crossplane/apprunner-service.yaml"
+          if [ ! -f "${MANIFEST}" ]; then
+            echo "[update-config-aws] No apprunner-service.yaml found for ${APP_NAME} — skipping"
+            exit 0
+          fi
+
+          sed -i -E \
+            "s|(dkr\.ecr\.eu-west-3\.amazonaws\.com/${APP_NAME}):[^\"[:space:]]*|\1:${COMMIT_SHA}|" \
+            "${MANIFEST}"
+
+          git add "${MANIFEST}"
+          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to App Runner [ci skip]"
+
+          git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
+          git push "${AUTHED_URL}" HEAD
