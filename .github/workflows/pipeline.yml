@@ -460,7 +460,7 @@ jobs:
           cd config-repo
 
           # Update Kustomize overlay newTag for dev environment
-          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA:0:7}|" \
+          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" \
             "apps/${APP_NAME}/overlays/dev/kustomization.yaml"
 
           # Update Crossplane claim (if it exists)
@@ -512,7 +512,7 @@ jobs:
           cd config-repo
 
           # Update Kustomize overlay newTag for prod environment
-          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA:0:7}|" \
+          sed -i "s|newTag:.*|newTag: ${COMMIT_SHA}|" \
             "apps/${APP_NAME}/overlays/prod/kustomization.yaml"
 
           # Update Crossplane claim (if it exists)
