@@ -219,9 +219,8 @@ jobs:
         id: auth
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: >-
-            projects/199851303237/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: github-ci-sa@cnp-terraform.iam.gserviceaccount.com
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
           token_format: access_token
 
       - uses: docker/setup-buildx-action@v3
@@ -230,7 +229,7 @@ jobs:
         if: inputs.target_cloud != 'aws'
         uses: docker/login-action@v3
         with:
-          registry: europe-west9-docker.pkg.dev
+          registry: ${{ vars.REGISTRY_URL }}
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token }}
 
@@ -252,7 +251,7 @@ jobs:
       - name: Compute image refs
         run: |
           TARGET_CLOUD="${{ inputs.target_cloud }}"
-          GCP_REGISTRY="europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry"
+          GCP_REGISTRY="${{ vars.REGISTRY_URL }}"
           ECR_REGISTRY="562346647831.dkr.ecr.eu-west-3.amazonaws.com"
           IMAGE_REF=""
           CACHE_REF=""
@@ -304,16 +303,15 @@ jobs:
         id: auth
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: >-
-            projects/199851303237/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: github-ci-sa@cnp-terraform.iam.gserviceaccount.com
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
           token_format: access_token
 
       - name: Authenticate Docker to Artifact Registry
         if: inputs.target_cloud != 'aws'
         uses: docker/login-action@v3
         with:
-          registry: europe-west9-docker.pkg.dev
+          registry: ${{ vars.REGISTRY_URL }}
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token }}
 
@@ -333,7 +331,7 @@ jobs:
       - name: Compute scan ref
         run: |
           TARGET_CLOUD="${{ inputs.target_cloud }}"
-          GCP_REGISTRY="europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry"
+          GCP_REGISTRY="${{ vars.REGISTRY_URL }}"
           ECR_REGISTRY="562346647831.dkr.ecr.eu-west-3.amazonaws.com"
           if [ "$TARGET_CLOUD" != "aws" ]; then
             SCAN_REF="${GCP_REGISTRY}/${{ inputs.app_name }}:${{ github.sha }}"
@@ -392,9 +390,8 @@ jobs:
         if: inputs.target_cloud != 'aws'
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: >-
-            projects/199851303237/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: github-ci-sa@cnp-terraform.iam.gserviceaccount.com
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
 
       - name: Remove vulnerable image from Artifact Registry
         if: inputs.target_cloud != 'aws'
@@ -402,7 +399,7 @@ jobs:
           APP_NAME: ${{ inputs.app_name }}
           TAG: ${{ github.sha }}
         run: |
-          IMAGE="europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry/${APP_NAME}:${TAG}"
+          IMAGE="${{ vars.REGISTRY_URL }}/${APP_NAME}:${TAG}"
           echo "[cleanup] image to remove: ${IMAGE}"
 
           if gcloud artifacts docker images delete "${IMAGE}" --quiet; then
@@ -443,6 +440,7 @@ jobs:
           CONFIG_REPO_URL: ${{ inputs.config_repo_url }}
           APP_NAME: ${{ inputs.app_name }}
           COMMIT_SHA: ${{ github.sha }}
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
         run: |
           for var in CONFIG_REPO_TOKEN COMMIT_SHA APP_NAME CONFIG_REPO_URL; do
             eval "val=\$$var"
@@ -466,7 +464,7 @@ jobs:
           # Update Crossplane claim (if it exists)
           if [ -f "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml" ]; then
             sed -i -E \
-              "s|(europe-west9-docker\.pkg\.dev/cnp-terraform/cnp-registry/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
+              "s|(${REGISTRY_URL}/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
               "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
             git add "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
           fi
@@ -495,6 +493,7 @@ jobs:
           CONFIG_REPO_URL: ${{ inputs.config_repo_url }}
           APP_NAME: ${{ inputs.app_name }}
           COMMIT_SHA: ${{ github.sha }}
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
         run: |
           for var in CONFIG_REPO_TOKEN COMMIT_SHA APP_NAME CONFIG_REPO_URL; do
             eval "val=\$$var"
@@ -518,7 +517,7 @@ jobs:
           # Update Crossplane claim (if it exists)
           if [ -f "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml" ]; then
             sed -i -E \
-              "s|(europe-west9-docker\.pkg\.dev/cnp-terraform/cnp-registry/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
+              "s|(${REGISTRY_URL}/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
               "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
             git add "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
           fi
@@ -546,6 +545,7 @@ jobs:
           CONFIG_REPO_URL: ${{ inputs.config_repo_url }}
           APP_NAME: ${{ inputs.app_name }}
           COMMIT_SHA: ${{ github.sha }}
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
         run: |
           for var in CONFIG_REPO_TOKEN COMMIT_SHA APP_NAME CONFIG_REPO_URL; do
             eval "val=\$$var"
