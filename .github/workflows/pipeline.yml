@@ -568,17 +568,18 @@ jobs:
           git clone --depth=1 "${AUTHED_URL}" config-repo
           cd config-repo
 
-          MANIFEST="apps/${APP_NAME}/crossplane/ecs-task-definition.yaml"
-          if [ ! -f "${MANIFEST}" ]; then
-            echo "[update-config-aws] No ecs-task-definition.yaml found for ${APP_NAME} — skipping"
-            exit 0
-          fi
+          TASKDEF="apps/${APP_NAME}/crossplane/ecs-task-definition.yaml"
+          SERVICE="apps/${APP_NAME}/crossplane/ecs-service.yaml"
+          [ -f "$TASKDEF" ] || { echo "[update-config-aws] no ecs-task-definition.yaml, skip"; exit 0; }
+          command -v yq >/dev/null || { echo "yq manquant"; exit 1; }
 
-          sed -i -E \
-            "s|(dkr\.ecr\.eu-west-3\.amazonaws\.com/${APP_NAME}):[^\"[:space:]]*|\1:${COMMIT_SHA}|" \
-            "${MANIFEST}"
+          NEW_NAME="${APP_NAME}-${COMMIT_SHA:0:7}"
 
-          git add "${MANIFEST}"
+          yq -i ".metadata.name = \"${NEW_NAME}\"" "$TASKDEF"
+          sed -i -E "s|(dkr\.ecr\.eu-west-3\.amazonaws\.com/${APP_NAME}):[^\"[:space:]]*|\1:${COMMIT_SHA}|" "$TASKDEF"
+          yq -i ".spec.forProvider.taskDefinitionRef.name = \"${NEW_NAME}\"" "$SERVICE"
+
+          git add "$TASKDEF" "$SERVICE"
           git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to ECS Fargate [ci skip]"
 
           for attempt in 1 2 3 4 5; do
