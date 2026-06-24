@@ -539,7 +539,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Promote to App Runner
+      - name: Promote to ECS Fargate
         env:
           CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
           CONFIG_REPO_URL: ${{ inputs.config_repo_url }}
@@ -562,9 +562,9 @@ jobs:
           git clone --depth=1 "${AUTHED_URL}" config-repo
           cd config-repo
 
-          MANIFEST="apps/${APP_NAME}/crossplane/apprunner-service.yaml"
+          MANIFEST="apps/${APP_NAME}/crossplane/ecs-task-definition.yaml"
           if [ ! -f "${MANIFEST}" ]; then
-            echo "[update-config-aws] No apprunner-service.yaml found for ${APP_NAME} — skipping"
+            echo "[update-config-aws] No ecs-task-definition.yaml found for ${APP_NAME} — skipping"
             exit 0
           fi
 
@@ -573,7 +573,7 @@ jobs:
             "${MANIFEST}"
 
           git add "${MANIFEST}"
-          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to App Runner [ci skip]"
+          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to ECS Fargate [ci skip]"
 
           git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
           git push "${AUTHED_URL}" HEAD
