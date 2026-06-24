@@ -472,8 +472,14 @@ jobs:
           git add "apps/${APP_NAME}/overlays/dev/kustomization.yaml"
           git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to dev [ci skip]"
 
-          git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
-          git push "${AUTHED_URL}" HEAD
+          for attempt in 1 2 3 4 5; do
+            if git push "${AUTHED_URL}" HEAD:main; then echo "pushed (attempt $attempt)"; break; fi
+            echo "push rejected, rebase + retry $attempt"
+            git fetch "${AUTHED_URL}" main
+            git rebase FETCH_HEAD || { git rebase --abort; echo "rebase conflict"; exit 1; }
+            sleep $((RANDOM % 4 + 2))
+            [ "$attempt" = "5" ] && { echo "push failed after 5 attempts"; exit 1; }
+          done
 
   # ---------------------------------------------------------------------------
   # Stage: push — GitOps config update (prod, manual via environment protection)
@@ -575,5 +581,11 @@ jobs:
           git add "${MANIFEST}"
           git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to ECS Fargate [ci skip]"
 
-          git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
-          git push "${AUTHED_URL}" HEAD
+          for attempt in 1 2 3 4 5; do
+            if git push "${AUTHED_URL}" HEAD:main; then echo "pushed (attempt $attempt)"; break; fi
+            echo "push rejected, rebase + retry $attempt"
+            git fetch "${AUTHED_URL}" main
+            git rebase FETCH_HEAD || { git rebase --abort; echo "rebase conflict"; exit 1; }
+            sleep $((RANDOM % 4 + 2))
+            [ "$attempt" = "5" ] && { echo "push failed after 5 attempts"; exit 1; }
+          done
