@@ -88,7 +88,7 @@ jobs:
               echo "::warning::No recognized language found in '$path' — skipping lint/test for it."
               return
             fi
-            targets=$(echo "$targets" | jq --arg path "$path" --arg name "$name" --arg lang "$lang" \
+            targets=$(echo "$targets" | jq -c --arg path "$path" --arg name "$name" --arg lang "$lang" \
               '. + [{"path":$path,"name":$name,"lang":$lang}]')
           }
 
@@ -109,7 +109,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     needs: [detect-stack]
-    if: needs.detect-stack.outputs.matrix != '{"include":[]}'
+    if: success() && needs.detect-stack.outputs.matrix != '{"include":[]}'
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.detect-stack.outputs.matrix) }}
