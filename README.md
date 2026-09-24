@@ -265,6 +265,32 @@ Production promotion (`update-config-prod`) requires a manual approval in the Gi
 
 ## 9. What your app must provide
 
+### Language layout (single app or front/back split)
+
+The pipeline auto-detects language(s) for lint/test by scanning **top-level
+directories only** (see `detect-stack` in `pipeline.yml`):
+
+- **Single-language app** (most apps today): put your language's marker file
+  (`package.json`, `requirements.txt`/`pyproject.toml`, `go.mod`,
+  `pom.xml`/`build.gradle(.kts)`, or `CMakeLists.txt`) at the **repo root**.
+- **Split into separate parts** (e.g. front + back, or more): each part must
+  be its **own top-level directory**, containing its own marker file. The
+  directory name is free — `front`/`back`, `client`/`server`, `web`/`api`,
+  whatever fits your app — the pipeline detects by content, not by name.
+
+```
+✅ my-app/front/package.json          ✅ my-app/client/package.json
+✅ my-app/back/requirements.txt       ✅ my-app/server/go.mod
+
+❌ my-app/apps/web/package.json       — nested one level too deep, NOT detected
+```
+
+**This is a platform convention, not an automatic capability**: only one
+directory level is scanned. A nested layout (`apps/web/`, `services/api/`,
+...) will not be picked up and that part will silently get no lint/test.
+If your app needs a deeper layout, say so before onboarding it — extending
+the scan depth is possible but isn't implemented yet.
+
 ### Required files
 
 ```
