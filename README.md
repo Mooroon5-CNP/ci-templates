@@ -25,12 +25,16 @@ Reference it once in your app repo and get a full secure pipeline — linting, t
 Every push to `main` or `prod` runs:
 
 ```
-lint (ESLint + Hadolint)  — parallel
+detect-stack (which language(s) does the app use?)
          │
          ▼
-       test (npm test)
-         │
-         ▼
+   lint (per language, parallel)   lint-hadolint (Dockerfile)  — parallel
+         │                                   │
+         └──────────────────┬────────────────┘
+                             ▼
+                   test (per language, parallel)
+                             │
+                             ▼
 scan-secrets (Gitleaks)   scan-deps (Trivy FS)  — parallel
          │                       │
          └──────────┬────────────┘
@@ -48,6 +52,11 @@ scan-secrets (Gitleaks)   scan-deps (Trivy FS)  — parallel
 
 If any stage fails, everything after it is skipped.
 If the image scan fails, the image is automatically deleted from the registry.
+
+`lint` and `test` are matrix jobs — one instance per detected language target
+(root, or each top-level directory that has its own language). See
+[section 9](#9-what-your-app-must-provide) for the directory convention and
+[section 5](#5-pipeline-stages-in-order) for which languages are supported.
 
 ---
 
@@ -122,18 +131,36 @@ The image tag is always the full commit SHA (`${{ github.sha }}`).
 
 ## 5. Pipeline stages in order
 
+### Stage 0 — Detect
+
+Job: **`detect-stack`** — scans top-level directories (or the repo root, if
+none qualify) for a recognized language marker file, and outputs a matrix
+consumed by `lint` and `test`. See [section 9](#9-what-your-app-must-provide)
+for the directory convention.
+
+| Language | Marker file(s) |
+|---|---|
+| Node.js | `package.json` |
+| Python | `requirements.txt` or `pyproject.toml` |
+| Go | `go.mod` |
+| Java | `pom.xml` (Maven) or `build.gradle(.kts)` (Gradle) |
+| C++ | `CMakeLists.txt` |
+
+A target with no recognized language gets a workflow warning and is skipped
+(not failed).
+
 ### Stage 1 — Lint (parallel)
 
 | Job | What it runs | Blocks on |
 |---|---|---|
-| `lint-eslint` | `npm ci` then `npm run lint` | Any ESLint error; also fails if `package-lock.json` is missing |
+| `lint` (matrix, one per detected target) | ESLint (node) / flake8 (python) / `go vet` (go) / Maven or Gradle compile (java) / cppcheck (cpp) | Any lint error for that target; Node also fails if `package-lock.json` is missing |
 | `lint-hadolint` | `hadolint/hadolint:latest-alpine` on `Dockerfile` | Any Hadolint error |
 
 ### Stage 2 — Test
 
 | Job | What it runs | Artifact |
 |---|---|---|
-| `test` | `npm ci` then `npm test` | `test-results.xml` (7-day retention, `if-no-files-found: ignore`) |
+| `test` (matrix, one per detected target) | `npm test` (node) / `pytest` (python) / `go test` (go) / Maven or Gradle test (java) / CMake + CTest (cpp) | `test-results-<target-name>.xml` (7-day retention, `if-no-files-found: ignore` — not every language produces one) |
 
 ### Stage 3 — Security scans (parallel, after test)
 
@@ -187,13 +214,18 @@ See [section 8](#8-gitops-promotion) for details.
 ### GCP Artifact Registry
 
 ```
-europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry/<app_name>:<sha>
+<REGISTRY_URL variable>/<app_name>:<sha>
 ```
 
 Layer cache:
 ```
-europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry/cache:<app_name>
+<REGISTRY_URL variable>/cache:<app_name>
 ```
+
+`REGISTRY_URL` (along with `WIF_PROVIDER` and `GCP_SA_EMAIL`) is a **GitHub
+Actions variable set per app repo** — not hardcoded in the pipeline — so it
+always reflects whatever GCP project that app is currently deployed to. See
+[section 7](#7-keyless-authentication).
 
 Active when `target_cloud` is `gcp` or `both`.
 
@@ -202,6 +234,14 @@ Active when `target_cloud` is `gcp` or `both`.
 ```
 562346647831.dkr.ecr.eu-west-3.amazonaws.com/<app_name>:<sha>
 ```
+
+> ⚠️ **Unlike GCP, this AWS account ID is hardcoded directly in `pipeline.yml`**
+> (7 occurrences: the IAM role ARN and the ECR registry host), not read from a
+> variable. `config-repo`'s history shows a later migration of AWS resources
+> to a **different** account (`804210702561`) that this pipeline does not
+> reflect — worth confirming which account is actually correct before relying
+> on `target_cloud: aws` or `both`; an AWS build may currently authenticate
+> against the wrong account.
 
 Active when `target_cloud` is `aws` or `both`.
 **The ECR repository is created automatically on first push** if it doesn't already exist.
@@ -219,15 +259,19 @@ No static credentials are stored anywhere. Both clouds use short-lived tokens ob
 ### GCP — Workload Identity Federation
 
 ```
-Workload Identity Pool : projects/199851303237/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-Service Account        : github-ci-sa@cnp-terraform.iam.gserviceaccount.com
+Workload Identity Pool : <WIF_PROVIDER variable, e.g. projects/<number>/locations/global/workloadIdentityPools/github-pool/providers/github-provider>
+Service Account        : <GCP_SA_EMAIL variable, e.g. github-ci-sa@<project-id>.iam.gserviceaccount.com>
 Action                 : google-github-actions/auth@v2
 ```
+
+Both are GitHub Actions variables set per app repo, not hardcoded in the
+pipeline — check the calling app repo's **Settings → Secrets and variables →
+Actions → Variables** for the values actually in effect.
 
 ### AWS — OIDC / STS
 
 ```
-Role ARN : arn:aws:iam::562346647831:role/github-ecr-push-role
+Role ARN : arn:aws:iam::562346647831:role/github-ecr-push-role   (hardcoded — see the ⚠️ in section 6)
 Region   : eu-west-3
 Action   : aws-actions/configure-aws-credentials@v4
 ```
@@ -252,7 +296,7 @@ newTag: 02a7f39
 **`apps/<app_name>/crossplane/cloudrun-claim.yaml`** *(updated only if the file exists)*
 ```yaml
 # image reference updated to the full SHA
-image: europe-west9-docker.pkg.dev/cnp-terraform/cnp-registry/<app_name>:<full-sha>
+image: <REGISTRY_URL variable>/<app_name>:<full-sha>
 ```
 
 The commit message is `chore(<app_name>): promote <sha> to {dev,prod} [ci skip]`.
@@ -293,15 +337,29 @@ the scan depth is possible but isn't implemented yet.
 
 ### Required files
 
+`Dockerfile` and `.github/workflows/ci.yml` are always required, regardless
+of language — the build stage always builds one image from one Dockerfile,
+whatever the language mix used for lint/test:
+
 ```
 my-app/
-├── Dockerfile              ← required, must be at repo root
-├── package.json            ← must have "lint" and "test" scripts
-├── package-lock.json       ← required (pipeline uses npm ci)
+├── Dockerfile              ← required, must be at repo root (or wherever the
+│                              `dockerfile`/`context` inputs point)
 └── .github/workflows/ci.yml
 ```
 
-### `package.json` scripts
+Beyond that, requirements are per detected language target (root, or each
+top-level directory — see [above](#language-layout-single-app-or-frontback-split)):
+
+| Language | Files needed for `lint`/`test` to run |
+|---|---|
+| Node.js | `package.json` with `"lint"` and `"test"` scripts, plus a committed `package-lock.json` (pipeline uses `npm ci`, fails if missing) |
+| Python | `requirements.txt` or `pyproject.toml`; test files discoverable by `pytest` (e.g. `test_*.py`) |
+| Go | `go.mod`; `go vet` and `go test ./...` run as-is, no extra config needed |
+| Java | `pom.xml` (Maven) or `build.gradle`/`build.gradle.kts` (Gradle, needs a committed `gradlew` wrapper) |
+| C++ | `CMakeLists.txt` configured for `ctest`; `cppcheck` is installed by the pipeline, no setup needed |
+
+### `package.json` scripts (Node targets)
 
 ```json
 {
@@ -359,13 +417,13 @@ config-repo/
 
 ## 10. FAQ
 
-**`lint-eslint` fails: "package-lock.json not found"**
+**`lint` (node target) fails: "package-lock.json not found"**
 
 Run `npm install` locally and commit the generated `package-lock.json`. The pipeline refuses to run without it to guarantee reproducible installs.
 
 ---
 
-**`lint-eslint` fails: "eslint not found in node_modules"**
+**`lint` (node target) fails: "eslint not found in node_modules"**
 
 ESLint is not in `devDependencies`. Add it:
 ```bash
