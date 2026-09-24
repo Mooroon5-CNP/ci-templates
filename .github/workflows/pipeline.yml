@@ -49,10 +49,14 @@ on:
 jobs:
 
   # ---------------------------------------------------------------------------
-  # Stage: detect — figure out which language runs in front/, back/, or at the
-  # repo root, so lint/test know which toolchain to use. Repos without a
-  # front/back split (e.g. cnp-portal today) fall back to root detection —
-  # this keeps every existing onboarded app working unchanged.
+  # Stage: detect — figure out which language(s) the app uses, so lint/test
+  # know which toolchain to run. Scans every top-level directory (whatever
+  # it's named — front/back, client/server, web/api, ...) and keeps the ones
+  # that contain a recognized language marker file. If no subdirectory
+  # qualifies, falls back to detecting at the repo root instead — this keeps
+  # every currently onboarded app (cnp-portal, exemple-app-cnp, etc., all
+  # root-level Node today) working unchanged. Only one level deep is scanned
+  # (a nested path like apps/web/ won't be picked up on its own).
   #
   # To support an additional language: add one more `elif` branch in
   # detect_lang() below, plus the matching setup/lint/test steps in the
@@ -84,19 +88,37 @@ jobs:
           targets="[]"
           add_target() {
             local path="$1" name="$2" lang="$3"
-            if [ -z "$lang" ]; then
-              echo "::warning::No recognized language found in '$path' — skipping lint/test for it."
-              return
-            fi
             targets=$(echo "$targets" | jq -c --arg path "$path" --arg name "$name" --arg lang "$lang" \
               '. + [{"path":$path,"name":$name,"lang":$lang}]')
           }
 
-          if [ -d "front" ] || [ -d "back" ]; then
-            [ -d "front" ] && add_target "front" "front" "$(detect_lang front)"
-            [ -d "back" ]  && add_target "back"  "back"  "$(detect_lang back)"
-          else
-            add_target "." "root" "$(detect_lang .)"
+          # Directories that are never an app's own source root, regardless
+          # of language — skip them so they can't be mistaken for a target.
+          EXCLUDE_DIRS=".git .github node_modules venv .venv __pycache__ dist build target vendor .idea .vscode"
+          is_excluded() {
+            local dir="$1"
+            for ex in $EXCLUDE_DIRS; do
+              [ "$dir" = "$ex" ] && return 0
+            done
+            return 1
+          }
+
+          for entry in */; do
+            dir="${entry%/}"
+            is_excluded "$dir" && continue
+            lang=$(detect_lang "$dir")
+            [ -n "$lang" ] && add_target "$dir" "$dir" "$lang"
+          done
+
+          # No recognized subdirectory anywhere — this is a monolith (or an
+          # unrecognized layout), so check the repo root itself instead.
+          if [ "$targets" = "[]" ]; then
+            root_lang=$(detect_lang .)
+            if [ -n "$root_lang" ]; then
+              add_target "." "root" "$root_lang"
+            else
+              echo "::warning::No recognized language found anywhere in the repo (checked top-level directories and repo root) — lint/test will be skipped."
+            fi
           fi
 
           echo "Detected targets: $targets"
