@@ -49,40 +49,172 @@ on:
 jobs:
 
   # ---------------------------------------------------------------------------
-  # Stage: lint — parallel
+  # Stage: detect — figure out which language(s) the app uses, so lint/test
+  # know which toolchain to run. Scans every top-level directory (whatever
+  # it's named — front/back, client/server, web/api, ...) and keeps the ones
+  # that contain a recognized language marker file. If no subdirectory
+  # qualifies, falls back to detecting at the repo root instead — this keeps
+  # every currently onboarded app (cnp-portal, exemple-app-cnp, etc., all
+  # root-level Node today) working unchanged. Only one level deep is scanned
+  # (a nested path like apps/web/ won't be picked up on its own).
+  #
+  # To support an additional language: add one more `elif` branch in
+  # detect_lang() below, plus the matching setup/lint/test steps in the
+  # "lint" and "test" jobs (search for the language name, e.g. "python").
   # ---------------------------------------------------------------------------
 
-  lint-eslint:
+  detect-stack:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - id: detect
+        run: |
+          detect_lang() {
+            local dir="$1"
+            if   [ -f "$dir/package.json" ]; then echo "node"
+            elif [ -f "$dir/requirements.txt" ] || [ -f "$dir/pyproject.toml" ]; then echo "python"
+            elif [ -f "$dir/go.mod" ]; then echo "go"
+            elif [ -f "$dir/pom.xml" ] || [ -f "$dir/build.gradle" ] || [ -f "$dir/build.gradle.kts" ]; then echo "java"
+            elif [ -f "$dir/CMakeLists.txt" ]; then echo "cpp"
+            else echo ""
+            fi
+          }
+
+          targets="[]"
+          add_target() {
+            local path="$1" name="$2" lang="$3"
+            targets=$(echo "$targets" | jq -c --arg path "$path" --arg name "$name" --arg lang "$lang" \
+              '. + [{"path":$path,"name":$name,"lang":$lang}]')
+          }
+
+          # Directories that are never an app's own source root, regardless
+          # of language — skip them so they can't be mistaken for a target.
+          EXCLUDE_DIRS=".git .github node_modules venv .venv __pycache__ dist build target vendor .idea .vscode"
+          is_excluded() {
+            local dir="$1"
+            for ex in $EXCLUDE_DIRS; do
+              [ "$dir" = "$ex" ] && return 0
+            done
+            return 1
+          }
+
+          for entry in */; do
+            dir="${entry%/}"
+            is_excluded "$dir" && continue
+            lang=$(detect_lang "$dir")
+            [ -n "$lang" ] && add_target "$dir" "$dir" "$lang"
+          done
+
+          # No recognized subdirectory anywhere — this is a monolith (or an
+          # unrecognized layout), so check the repo root itself instead.
+          if [ "$targets" = "[]" ]; then
+            root_lang=$(detect_lang .)
+            if [ -n "$root_lang" ]; then
+              add_target "." "root" "$root_lang"
+            else
+              echo "::warning::No recognized language found anywhere in the repo (checked top-level directories and repo root) — lint/test will be skipped."
+            fi
+          fi
+
+          echo "Detected targets: $targets"
+          echo "matrix={\"include\":$targets}" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Stage: lint — parallel (one job per detected target, plus Dockerfile lint)
+  # ---------------------------------------------------------------------------
+
+  lint:
+    runs-on: ubuntu-latest
+    needs: [detect-stack]
+    if: success() && needs.detect-stack.outputs.matrix != '{"include":[]}'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-stack.outputs.matrix) }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: matrix.lang == 'node'
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: ${{ matrix.path }}/package-lock.json
 
-      - name: Verify lockfile
+      - name: Setup Python
+        if: matrix.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Go
+        if: matrix.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Setup Java
+        if: matrix.lang == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Lint (node — ESLint)
+        if: matrix.lang == 'node'
+        working-directory: ${{ matrix.path }}
         run: |
           if [ ! -f package-lock.json ]; then
-            echo "[lint-eslint] ERROR: package-lock.json not found." >&2
-            echo "[lint-eslint] Run 'npm install' locally and commit the lockfile." >&2
+            echo "[lint:${{ matrix.name }}] ERROR: package-lock.json not found." >&2
+            echo "[lint:${{ matrix.name }}] Run 'npm install' locally and commit the lockfile." >&2
             exit 1
           fi
-
-      - run: npm ci --prefer-offline
-
-      - name: ESLint
-        run: |
+          npm ci --prefer-offline
           if ! npm run lint -- --help > /dev/null 2>&1; then
             if ! npx --no-install eslint --version > /dev/null 2>&1; then
-              echo "[lint-eslint] ERROR: eslint not found in node_modules." >&2
+              echo "[lint:${{ matrix.name }}] ERROR: eslint not found in node_modules." >&2
               exit 1
             fi
           fi
           npm run lint
+
+      - name: Lint (python — flake8)
+        if: matrix.lang == 'python'
+        working-directory: ${{ matrix.path }}
+        run: |
+          pip install --quiet flake8
+          flake8 .
+
+      - name: Lint (go — go vet)
+        if: matrix.lang == 'go'
+        working-directory: ${{ matrix.path }}
+        run: go vet ./...
+
+      - name: Lint (java — Maven compile)
+        if: matrix.lang == 'java' && hashFiles(format('{0}/pom.xml', matrix.path)) != ''
+        working-directory: ${{ matrix.path }}
+        run: mvn -q -B compile
+
+      - name: Lint (java — Gradle compile)
+        if: matrix.lang == 'java' && hashFiles(format('{0}/pom.xml', matrix.path)) == ''
+        working-directory: ${{ matrix.path }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew compileJava
+
+      - name: Lint (cpp — cppcheck)
+        if: matrix.lang == 'cpp'
+        working-directory: ${{ matrix.path }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq cppcheck
+          cppcheck --error-exitcode=1 --quiet .
 
   lint-hadolint:
     runs-on: ubuntu-latest
@@ -104,31 +236,92 @@ jobs:
             hadolint Dockerfile
 
   # ---------------------------------------------------------------------------
-  # Stage: test
+  # Stage: test — parallel (one job per detected target)
   # ---------------------------------------------------------------------------
 
   test:
     runs-on: ubuntu-latest
-    needs: [lint-eslint, lint-hadolint]
+    needs: [detect-stack, lint, lint-hadolint]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-stack.outputs.matrix) }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        if: matrix.lang == 'node'
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: ${{ matrix.path }}/package-lock.json
 
-      - run: npm ci --prefer-offline
+      - name: Setup Python
+        if: matrix.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-      - run: npm test
+      - name: Setup Go
+        if: matrix.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Setup Java
+        if: matrix.lang == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Test (node)
+        if: matrix.lang == 'node'
+        working-directory: ${{ matrix.path }}
+        run: |
+          npm ci --prefer-offline
+          npm test
+
+      - name: Test (python)
+        if: matrix.lang == 'python'
+        working-directory: ${{ matrix.path }}
+        run: |
+          [ -f requirements.txt ] && pip install --quiet -r requirements.txt
+          pip install --quiet pytest
+          pytest --junitxml=test-results.xml
+
+      - name: Test (go)
+        if: matrix.lang == 'go'
+        working-directory: ${{ matrix.path }}
+        run: go test ./...
+
+      - name: Test (java — Maven)
+        if: matrix.lang == 'java' && hashFiles(format('{0}/pom.xml', matrix.path)) != ''
+        working-directory: ${{ matrix.path }}
+        run: mvn -q -B test
+
+      - name: Test (java — Gradle)
+        if: matrix.lang == 'java' && hashFiles(format('{0}/pom.xml', matrix.path)) == ''
+        working-directory: ${{ matrix.path }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew test
+
+      - name: Test (cpp — CMake + CTest)
+        if: matrix.lang == 'cpp'
+        working-directory: ${{ matrix.path }}
+        run: |
+          cmake -B build
+          cmake --build build
+          ctest --test-dir build --output-on-failure
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results
-          path: test-results.xml
+          name: test-results-${{ matrix.name }}
+          path: ${{ matrix.path }}/test-results.xml
           if-no-files-found: ignore
           retention-days: 7
 
