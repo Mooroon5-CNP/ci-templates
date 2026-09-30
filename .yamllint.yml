@@ -1,14 +1,14 @@
 # .yamllint.yml — yamllint configuration for all CI template files.
 #
-# Applied by the lint-templates job in .gitlab-ci.yml on every push.
-# Rules are intentionally lenient where GitLab YAML conventions conflict
-# with strict YAML style (e.g., truthy values like "on", "yes").
+# Applied by the yamllint job in .github/workflows/ci.yml on every push.
+# Rules are intentionally lenient where GitHub Actions YAML conventions conflict
+# with strict YAML style (e.g., the top-level "on:" trigger key).
 
 extends: default
 
 rules:
-  # GitLab CI uses bare strings like "on_failure", "always", "never" as enum
-  # values; these are valid YAML scalars, not booleans — allow them.
+  # GitHub Actions uses "on:" as the trigger key, which strict YAML treats as
+  # a boolean — check-keys: false allows it while still flagging truthy values.
   truthy:
     allowed-values: ["true", "false"]
     check-keys: false
@@ -23,7 +23,7 @@ rules:
   # disable the comment-indentation rule which false-positives inside them.
   comments-indentation: disable
 
-  # Two-space indentation is enforced (GitLab standard).
+  # Two-space indentation is enforced (GitHub Actions convention).
   indentation:
     spaces: 2
     indent-sequences: true
