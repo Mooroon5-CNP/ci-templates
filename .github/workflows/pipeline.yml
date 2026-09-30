@@ -229,10 +229,14 @@ jobs:
             echo "[lint-hadolint] ERROR: Dockerfile not found at repository root." >&2
             exit 1
           fi
+          # Pinned on purpose: a floating tag (latest-alpine) lets upstream
+          # releases add new rules and break every app's CI overnight with no
+          # change on our side (v2.15.0 started flagging shell-form
+          # HEALTHCHECK CMD as DL3025). Bump this deliberately, in its own PR.
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
-            hadolint/hadolint:latest-alpine \
+            hadolint/hadolint:v2.14.0-alpine \
             hadolint Dockerfile
 
   # ---------------------------------------------------------------------------
