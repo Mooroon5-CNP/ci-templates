@@ -154,7 +154,7 @@ A target with no recognized language gets a workflow warning and is skipped
 | Job | What it runs | Blocks on |
 |---|---|---|
 | `lint` (matrix, one per detected target) | ESLint (node) / flake8 (python) / `go vet` (go) / Maven or Gradle compile (java) / cppcheck (cpp) | Any lint error for that target; Node also fails if `package-lock.json` is missing |
-| `lint-hadolint` | `hadolint/hadolint:latest-alpine` on `Dockerfile` | Any Hadolint error |
+| `lint-hadolint` | `hadolint/hadolint:v2.14.0-alpine` (pinned) on `Dockerfile` | Any Hadolint error |
 
 ### Stage 2 — Test
 
