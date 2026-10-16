@@ -1,0 +1,60 @@
+# image-scan — Trivy image scan, identical for every language.
+# CRITICAL (fixed) vulnerabilities block; HIGH/MEDIUM are reported only.
+# The image must be known to the local Docker daemon (pulled or built).
+name: CNP image-scan
+description: Scan a local Docker image with Trivy and write trivy-report.txt in the workspace.
+
+inputs:
+  image_ref:
+    description: Image to scan (registry reference or local tag).
+    required: true
+  blocking:
+    description: '"true" fails the step on CRITICAL findings; "false" only reports.'
+    required: false
+    default: "true"
+  trivy_image:
+    description: Trivy image.
+    required: false
+    default: aquasec/trivy:latest
+
+runs:
+  using: composite
+  steps:
+    - name: Scan image - CRITICAL
+      shell: bash
+      env:
+        IMAGE_REF: ${{ inputs.image_ref }}
+        BLOCKING: ${{ inputs.blocking }}
+        TRIVY_IMAGE: ${{ inputs.trivy_image }}
+      run: |
+        exit_code=0
+        [ "$BLOCKING" = "true" ] && exit_code=1
+        rc=0
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v "$GITHUB_WORKSPACE:/workspace" \
+          "$TRIVY_IMAGE" image \
+          --severity CRITICAL \
+          --exit-code "$exit_code" \
+          --ignore-unfixed \
+          --format table \
+          --output /workspace/trivy-report.txt \
+          "$IMAGE_REF" || rc=$?
+        # Show the report even when the scan fails, so the CVEs are in the log.
+        cat "$GITHUB_WORKSPACE/trivy-report.txt" || true
+        exit "$rc"
+
+    - name: Scan image - HIGH/MEDIUM (non-blocking)
+      shell: bash
+      env:
+        IMAGE_REF: ${{ inputs.image_ref }}
+        TRIVY_IMAGE: ${{ inputs.trivy_image }}
+      run: |
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          "$TRIVY_IMAGE" image \
+          --severity HIGH,MEDIUM \
+          --exit-code 0 \
+          --ignore-unfixed \
+          --format table \
+          "$IMAGE_REF" || true

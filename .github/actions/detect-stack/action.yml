@@ -1,0 +1,103 @@
+# detect-stack — find which language(s) an app uses and emit a job matrix.
+#
+# Scans every top-level directory of `root` (whatever its name: front/back,
+# web/api, ...) for a language marker file and keeps those that have one. If
+# no subdirectory qualifies, falls back to `root` itself (monolith). Only one
+# level deep is scanned.
+#
+# A directory that holds markers of SEVERAL languages (package.json AND
+# requirements.txt, ...) is ambiguous and fails the job: one language per
+# directory (CNP-026, gap E2).
+#
+# To support an additional language: add its marker to `langs_of()` below, add
+# a `lang-<x>` action, and add one `if: matrix.lang == '<x>'` line to the
+# lint and test jobs of pipeline.yml.
+name: CNP detect-stack
+description: Detect the language of each build target and output a GitHub matrix.
+
+inputs:
+  root:
+    description: Directory to scan (the repo root by default).
+    required: false
+    default: "."
+
+outputs:
+  matrix:
+    description: 'JSON {"include":[{"path","name","lang"}, ...]}'
+    value: ${{ steps.detect.outputs.matrix }}
+  has_targets:
+    description: '"true" when at least one target was detected, "false" otherwise.'
+    value: ${{ steps.detect.outputs.has_targets }}
+
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      env:
+        ROOT: ${{ inputs.root }}
+      run: |
+        # Prints the languages whose marker file is in $1, space separated.
+        langs_of() {
+          local dir="$1" found=""
+          [ -f "$dir/package.json" ] && found="$found node"
+          if [ -f "$dir/requirements.txt" ] || [ -f "$dir/pyproject.toml" ]; then found="$found python"; fi
+          [ -f "$dir/go.mod" ] && found="$found go"
+          if [ -f "$dir/pom.xml" ] || [ -f "$dir/build.gradle" ] || [ -f "$dir/build.gradle.kts" ]; then
+            found="$found java"
+          fi
+          [ -f "$dir/CMakeLists.txt" ] && found="$found cpp"
+          echo "${found# }"
+        }
+
+        targets="[]"
+        ambiguous=0
+        # Adds the directory to the targets; flags the run when it mixes languages.
+        consider() {
+          local dir="$1" name="$2" langs
+          langs=$(langs_of "$dir")
+          [ -z "$langs" ] && return 0
+          if [ "$(wc -w <<<"$langs")" -gt 1 ]; then
+            echo "::error title=Ambiguous directory ${name}::'${dir}' contains markers of several languages (${langs}). Use one language per directory: move each one into its own top-level directory."
+            ambiguous=1
+            return 0
+          fi
+          targets=$(jq -c --arg path "$dir" --arg name "$name" --arg lang "$langs" \
+            '. + [{"path":$path,"name":$name,"lang":$lang}]' <<<"$targets")
+        }
+
+        # Directories that are never an app's own source root.
+        EXCLUDE_DIRS=".git .github node_modules venv .venv __pycache__ dist build target vendor .idea .vscode"
+        is_excluded() {
+          for ex in $EXCLUDE_DIRS; do
+            [ "$1" = "$ex" ] && return 0
+          done
+          return 1
+        }
+
+        prefix=""
+        [ "$ROOT" != "." ] && prefix="${ROOT%/}/"
+
+        for entry in "${ROOT%/}"/*/; do
+          [ -d "$entry" ] || continue
+          base="$(basename "$entry")"
+          is_excluded "$base" && continue
+          consider "${prefix}${base}" "$base"
+        done
+
+        # No recognized subdirectory: monolith, check the root itself.
+        if [ "$targets" = "[]" ] && [ "$ambiguous" = "0" ]; then
+          consider "${ROOT%/}" "root"
+          if [ "$targets" = "[]" ] && [ "$ambiguous" = "0" ]; then
+            echo "::warning title=No language detected::No recognized language marker found (checked top-level directories and the root). Lint and test are skipped; Dockerfile lint, scans and build still run."
+          fi
+        fi
+
+        [ "$ambiguous" = "1" ] && exit 1
+
+        echo "Detected targets: $targets"
+        has_targets=$([ "$targets" = "[]" ] && echo false || echo true)
+        {
+          echo "matrix={\"include\":$targets}"
+          echo "has_targets=$has_targets"
+        } >> "$GITHUB_OUTPUT"

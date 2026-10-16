@@ -1,0 +1,73 @@
+# lang-node — lint or test one Node.js target (npm only; the lockfile is mandatory).
+name: CNP lang-node
+description: Setup Node.js, install with npm ci, then run lint or test for one target.
+
+inputs:
+  step:
+    description: "lint or test"
+    required: true
+  path:
+    description: Directory of the target (. for the repo root).
+    required: false
+    default: "."
+  version:
+    description: Node version. Default - .nvmrc, then package.json engines.node, then 20.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check inputs and lockfile
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        STEP: ${{ inputs.step }}
+      run: |
+        case "$STEP" in lint|test) ;; *) echo "::error::lang-node: step must be 'lint' or 'test' (got '$STEP')"; exit 1 ;; esac
+        if [ ! -f package-lock.json ]; then
+          echo "::error title=package-lock.json missing::package-lock.json not found. Run 'npm install' locally and commit the lockfile (yarn and pnpm are not supported)."
+          exit 1
+        fi
+
+    - name: Resolve Node version
+      id: version
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        if [ -z "$VERSION" ] && [ -f .nvmrc ]; then VERSION=$(tr -d '[:space:]' < .nvmrc); VERSION="${VERSION#v}"; fi
+        if [ -z "$VERSION" ]; then VERSION=$(jq -r '.engines.node // empty' package.json); fi
+        echo "value=${VERSION:-20}" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ steps.version.outputs.value }}
+        cache: npm
+        cache-dependency-path: ${{ inputs.path }}/package-lock.json
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: npm ci --prefer-offline
+
+    - name: Lint (ESLint via npm run lint)
+      if: inputs.step == 'lint'
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        if jq -e '.scripts.lint' package.json > /dev/null; then
+          npm run lint
+        elif npx --no-install eslint --version > /dev/null 2>&1; then
+          npx --no-install eslint .
+        else
+          echo "::error title=No lint available::package.json has no 'lint' script and eslint is not installed."
+          exit 1
+        fi
+
+    - name: Test (npm test)
+      if: inputs.step == 'test'
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: npm test
