@@ -1,0 +1,77 @@
+# lang-java — lint or test one Java target. Maven (pom.xml) or Gradle (wrapper required, Tier 2).
+# "Lint" is the compilation: there is no standard Java linter to impose.
+name: CNP lang-java
+description: Setup Temurin, then compile (lint) or run the tests with Maven or the Gradle wrapper.
+
+inputs:
+  step:
+    description: "lint or test"
+    required: true
+  path:
+    description: Directory of the target (. for the repo root).
+    required: false
+    default: "."
+  version:
+    description: JDK major version. Default - 21.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check inputs and build tool
+      id: tool
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        STEP: ${{ inputs.step }}
+      run: |
+        case "$STEP" in lint|test) ;; *) echo "::error::lang-java: step must be 'lint' or 'test' (got '$STEP')"; exit 1 ;; esac
+        if [ -f pom.xml ]; then
+          tool=maven
+        else
+          tool=gradle
+          if [ ! -f gradlew ]; then
+            echo "::error title=Gradle wrapper missing::Gradle build detected but 'gradlew' is not committed. Run 'gradle wrapper' locally and commit gradlew + gradle/wrapper/."
+            exit 1
+          fi
+        fi
+        echo "name=$tool" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/setup-java@v4
+      if: steps.tool.outputs.name == 'maven'
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.version || '21' }}
+        cache: maven
+
+    - uses: actions/setup-java@v4
+      if: steps.tool.outputs.name == 'gradle'
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.version || '21' }}
+        cache: gradle
+
+    - name: Lint (compile)
+      if: inputs.step == 'lint'
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        if [ -f pom.xml ]; then
+          mvn -q -B compile
+        else
+          chmod +x ./gradlew
+          ./gradlew compileJava
+        fi
+
+    - name: Test
+      if: inputs.step == 'test'
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        if [ -f pom.xml ]; then
+          mvn -q -B test
+        else
+          chmod +x ./gradlew
+          ./gradlew test
+        fi

@@ -1,0 +1,45 @@
+# lang-cpp — lint or test one C++/CMake target (Tier 2, best effort).
+# The app MUST declare enable_testing() + add_test(): a project with no
+# registered test fails the test step instead of passing silently.
+name: CNP lang-cpp
+description: Run cppcheck (lint) or build with CMake and run CTest (test).
+
+inputs:
+  step:
+    description: "lint or test"
+    required: true
+  path:
+    description: Directory of the target (. for the repo root).
+    required: false
+    default: "."
+  version:
+    description: Unused (the compiler is the one on the runner); kept for a common interface.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check inputs
+      shell: bash
+      env:
+        STEP: ${{ inputs.step }}
+      run: |
+        case "$STEP" in lint|test) ;; *) echo "::error::lang-cpp: step must be 'lint' or 'test' (got '$STEP')"; exit 1 ;; esac
+
+    - name: Lint (cppcheck)
+      if: inputs.step == 'lint'
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        sudo apt-get update -qq && sudo apt-get install -y -qq cppcheck
+        cppcheck --error-exitcode=1 --quiet .
+
+    - name: Test (CMake + CTest)
+      if: inputs.step == 'test'
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        cmake -B build
+        cmake --build build
+        ctest --test-dir build --output-on-failure --no-tests=error

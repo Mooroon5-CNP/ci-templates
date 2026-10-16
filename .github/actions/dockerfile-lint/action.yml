@@ -1,0 +1,36 @@
+# dockerfile-lint — hadolint on the app's Dockerfile. Same for every language:
+# the Dockerfile is the build contract whatever the stack.
+name: CNP dockerfile-lint
+description: Check that the Dockerfile exists and lint it with a pinned hadolint.
+
+inputs:
+  dockerfile:
+    description: Path of the Dockerfile, relative to the workspace.
+    required: false
+    default: Dockerfile
+  # Pinned on purpose: a floating tag lets upstream releases add rules and break
+  # every app's CI overnight (v2.15.0 started flagging shell-form HEALTHCHECK CMD
+  # as DL3025). Bump this deliberately, in its own PR.
+  hadolint_image:
+    description: Hadolint image.
+    required: false
+    default: hadolint/hadolint:v2.14.0-alpine
+
+runs:
+  using: composite
+  steps:
+    - name: Lint Dockerfile
+      shell: bash
+      env:
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        HADOLINT_IMAGE: ${{ inputs.hadolint_image }}
+      run: |
+        if [ ! -f "$DOCKERFILE" ]; then
+          echo "::error title=Dockerfile missing::$DOCKERFILE not found. A Dockerfile at the repository root is required, whatever the language."
+          exit 1
+        fi
+        docker run --rm \
+          -v "$GITHUB_WORKSPACE:/workspace" \
+          -w /workspace \
+          "$HADOLINT_IMAGE" \
+          hadolint "$DOCKERFILE"

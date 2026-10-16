@@ -32,6 +32,8 @@ jobs:
             .github/workflows/pipeline.yml \
             .github/workflows/ci.yml \
             .github/workflows/build-push-artifact-registry.yml \
+            .github/workflows/test-templates.yml \
+            .github/actions \
             example-app/.github/workflows/ci.yml
 
   actionlint:

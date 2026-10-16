@@ -1,0 +1,64 @@
+# lang-python — lint or test one Python target (requirements.txt and/or pyproject.toml).
+name: CNP lang-python
+description: Setup Python, then run flake8 (lint) or install dependencies and run pytest (test).
+
+inputs:
+  step:
+    description: "lint or test"
+    required: true
+  path:
+    description: Directory of the target (. for the repo root).
+    required: false
+    default: "."
+  version:
+    description: Python version. Default - .python-version, then 3.12.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check inputs and resolve version
+      id: version
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        STEP: ${{ inputs.step }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        case "$STEP" in lint|test) ;; *) echo "::error::lang-python: step must be 'lint' or 'test' (got '$STEP')"; exit 1 ;; esac
+        if [ -z "$VERSION" ] && [ -f .python-version ]; then VERSION=$(tr -d '[:space:]' < .python-version); fi
+        depfile=requirements.txt
+        [ -f requirements.txt ] || depfile=pyproject.toml
+        {
+          echo "value=${VERSION:-3.12}"
+          echo "depfile=$depfile"
+        } >> "$GITHUB_OUTPUT"
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ steps.version.outputs.value }}
+        cache: pip
+        cache-dependency-path: ${{ inputs.path }}/${{ steps.version.outputs.depfile }}
+
+    - name: Lint (flake8)
+      if: inputs.step == 'lint'
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        pip install --quiet flake8
+        flake8 .
+
+    - name: Test (pytest)
+      if: inputs.step == 'test'
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        pip install --quiet pytest
+        if [ -f requirements.txt ]; then pip install --quiet -r requirements.txt; fi
+        # A pyproject.toml that declares a [project] is installed too (with the
+        # optional "test" extra when it has one); tool-only files are ignored.
+        if [ -f pyproject.toml ] && grep -q '^\[project\]' pyproject.toml; then
+          pip install --quiet ".[test]"
+        fi
+        pytest --junitxml=test-results.xml

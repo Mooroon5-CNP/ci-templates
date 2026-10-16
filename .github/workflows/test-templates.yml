@@ -1,0 +1,244 @@
+# test-templates.yml — Behavioural tests of the language-aware actions.
+#
+# ci.yml only checks that the YAML is well formed. This workflow actually RUNS
+# detect-stack, every lang-<x> action, dockerfile-lint and image-scan against
+# the fixture projects in fixtures/, including fixtures that must be REJECTED.
+# It uses the actions of the checked-out ref (./.github/actions/...), so a PR
+# is tested with its own changes — unlike pipeline.yml, which pins @main.
+
+name: CI Templates Behaviour Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # detect-stack: right matrix for each layout, hard failure on mixed languages.
+  # `expect` is "name:lang" pairs, comma separated; "error" means the action
+  # must fail; an empty string means no target (not a failure).
+  # ---------------------------------------------------------------------------
+  detect-stack:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {fixture: node-ok, expect: "root:node"}
+          - {fixture: python-requirements, expect: "root:python"}
+          - {fixture: python-pyproject, expect: "root:python"}
+          - {fixture: go-ok, expect: "root:go"}
+          - {fixture: java-maven, expect: "root:java"}
+          - {fixture: java-gradle, expect: "root:java"}
+          - {fixture: cpp-ok, expect: "root:cpp"}
+          - {fixture: fullstack, expect: "api:python,web:node"}
+          - {fixture: no-language, expect: ""}
+          - {fixture: polyglot-root, expect: "error"}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: detect
+        continue-on-error: true
+        uses: ./.github/actions/detect-stack
+        with:
+          root: fixtures/${{ matrix.fixture }}
+
+      - name: Check detection result
+        env:
+          EXPECT: ${{ matrix.expect }}
+          OUTCOME: ${{ steps.detect.outcome }}
+          MATRIX: ${{ steps.detect.outputs.matrix }}
+          HAS_TARGETS: ${{ steps.detect.outputs.has_targets }}
+        run: |
+          if [ "$EXPECT" = "error" ]; then
+            [ "$OUTCOME" = "failure" ] || { echo "::error::expected detect-stack to fail, got '$OUTCOME'"; exit 1; }
+            exit 0
+          fi
+          [ "$OUTCOME" = "success" ] || { echo "::error::detect-stack failed unexpectedly"; exit 1; }
+          got=$(jq -r '.include | map(.name + ":" + .lang) | join(",")' <<<"$MATRIX")
+          [ "$got" = "$EXPECT" ] || { echo "::error::expected '$EXPECT', got '$got'"; exit 1; }
+          want_has=$([ -n "$EXPECT" ] && echo true || echo false)
+          [ "$HAS_TARGETS" = "$want_has" ] || { echo "::error::has_targets='$HAS_TARGETS', expected '$want_has'"; exit 1; }
+
+  # ---------------------------------------------------------------------------
+  # lang-<x>: lint and test must pass on the healthy fixture of each language.
+  # `uses:` cannot take an expression, hence one `if:` pair per language.
+  # ---------------------------------------------------------------------------
+  languages:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {fixture: node-ok, lang: node}
+          - {fixture: python-requirements, lang: python}
+          - {fixture: python-pyproject, lang: python}
+          - {fixture: go-ok, lang: go}
+          - {fixture: java-maven, lang: java}
+          - {fixture: java-gradle, lang: java}
+          - {fixture: cpp-ok, lang: cpp}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint (node)
+        if: matrix.lang == 'node'
+        uses: ./.github/actions/lang-node
+        with:
+          step: lint
+          path: fixtures/${{ matrix.fixture }}
+      - name: Test (node)
+        if: matrix.lang == 'node'
+        uses: ./.github/actions/lang-node
+        with:
+          step: test
+          path: fixtures/${{ matrix.fixture }}
+
+      - name: Lint (python)
+        if: matrix.lang == 'python'
+        uses: ./.github/actions/lang-python
+        with:
+          step: lint
+          path: fixtures/${{ matrix.fixture }}
+      - name: Test (python)
+        if: matrix.lang == 'python'
+        uses: ./.github/actions/lang-python
+        with:
+          step: test
+          path: fixtures/${{ matrix.fixture }}
+
+      - name: Lint (go)
+        if: matrix.lang == 'go'
+        uses: ./.github/actions/lang-go
+        with:
+          step: lint
+          path: fixtures/${{ matrix.fixture }}
+      - name: Test (go)
+        if: matrix.lang == 'go'
+        uses: ./.github/actions/lang-go
+        with:
+          step: test
+          path: fixtures/${{ matrix.fixture }}
+
+      - name: Lint (java)
+        if: matrix.lang == 'java'
+        uses: ./.github/actions/lang-java
+        with:
+          step: lint
+          path: fixtures/${{ matrix.fixture }}
+      - name: Test (java)
+        if: matrix.lang == 'java'
+        uses: ./.github/actions/lang-java
+        with:
+          step: test
+          path: fixtures/${{ matrix.fixture }}
+
+      - name: Lint (cpp)
+        if: matrix.lang == 'cpp'
+        uses: ./.github/actions/lang-cpp
+        with:
+          step: lint
+          path: fixtures/${{ matrix.fixture }}
+      - name: Test (cpp)
+        if: matrix.lang == 'cpp'
+        uses: ./.github/actions/lang-cpp
+        with:
+          step: test
+          path: fixtures/${{ matrix.fixture }}
+
+  # ---------------------------------------------------------------------------
+  # Dockerfile validation + image scan, for the image of every language.
+  # The scan is non-blocking here: a new upstream CVE in a base image must not
+  # fail this repo's CI. What is checked is that the scanner runs and reports.
+  # ---------------------------------------------------------------------------
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fixture: [node-ok, python-requirements, python-pyproject, go-ok, java-maven, java-gradle, cpp-ok]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Dockerfile
+        uses: ./.github/actions/dockerfile-lint
+        with:
+          dockerfile: fixtures/${{ matrix.fixture }}/Dockerfile
+
+      - name: Build image
+        run: docker build -t "fixture/${{ matrix.fixture }}:test" "fixtures/${{ matrix.fixture }}"
+
+      - name: Scan image
+        uses: ./.github/actions/image-scan
+        with:
+          image_ref: fixture/${{ matrix.fixture }}:test
+          blocking: "false"
+
+      - name: Check the scan produced a report
+        run: test -f trivy-report.txt
+
+  # ---------------------------------------------------------------------------
+  # Things that must be REJECTED. Each step is expected to fail; the last step
+  # turns "it failed" into the test result.
+  # ---------------------------------------------------------------------------
+  rejections:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: node_no_lockfile
+        continue-on-error: true
+        uses: ./.github/actions/lang-node
+        with:
+          step: lint
+          path: fixtures/node-no-lockfile
+
+      - id: go_badformat
+        continue-on-error: true
+        uses: ./.github/actions/lang-go
+        with:
+          step: lint
+          path: fixtures/go-badformat
+
+      - id: gradle_no_wrapper
+        continue-on-error: true
+        uses: ./.github/actions/lang-java
+        with:
+          step: lint
+          path: fixtures/java-gradle-no-wrapper
+
+      - id: bad_dockerfile
+        continue-on-error: true
+        uses: ./.github/actions/dockerfile-lint
+        with:
+          dockerfile: fixtures/bad-dockerfile/Dockerfile
+
+      - id: missing_dockerfile
+        continue-on-error: true
+        uses: ./.github/actions/dockerfile-lint
+        with:
+          dockerfile: fixtures/does-not-exist/Dockerfile
+
+      - name: Every case above must have failed
+        env:
+          OUTCOMES: >-
+            node_no_lockfile=${{ steps.node_no_lockfile.outcome }}
+            go_badformat=${{ steps.go_badformat.outcome }}
+            gradle_no_wrapper=${{ steps.gradle_no_wrapper.outcome }}
+            bad_dockerfile=${{ steps.bad_dockerfile.outcome }}
+            missing_dockerfile=${{ steps.missing_dockerfile.outcome }}
+        run: |
+          status=0
+          for pair in $OUTCOMES; do
+            if [ "${pair#*=}" != "failure" ]; then
+              echo "::error::${pair%%=*} should have been rejected but its outcome is '${pair#*=}'"
+              status=1
+            fi
+          done
+          exit $status
