@@ -232,7 +232,7 @@ Active when `target_cloud` is `gcp` or `both`.
 ### AWS ECR (eu-west-3)
 
 ```
-562346647831.dkr.ecr.eu-west-3.amazonaws.com/<app_name>:<sha>
+804210702561.dkr.ecr.eu-west-3.amazonaws.com/<app_name>:<sha>
 ```
 
 > ⚠️ **Unlike GCP, this AWS account ID is hardcoded directly in `pipeline.yml`**
@@ -271,7 +271,7 @@ Actions → Variables** for the values actually in effect.
 ### AWS — OIDC / STS
 
 ```
-Role ARN : arn:aws:iam::562346647831:role/github-ecr-push-role   (hardcoded — see the ⚠️ in section 6)
+Role ARN : arn:aws:iam::804210702561:role/github-ecr-push-role   (hardcoded — see the ⚠️ in section 6)
 Region   : eu-west-3
 Action   : aws-actions/configure-aws-credentials@v4
 ```

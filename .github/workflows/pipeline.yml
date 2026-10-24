@@ -434,7 +434,7 @@ jobs:
         if: inputs.target_cloud != 'gcp'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::562346647831:role/github-ecr-push-role
+          role-to-assume: arn:aws:iam::804210702561:role/github-ecr-push-role
           aws-region: eu-west-3
 
       - name: ECR login + ensure repo
@@ -443,13 +443,13 @@ jobs:
           aws ecr describe-repositories --repository-names "${{ inputs.app_name }}" --region eu-west-3 \
             || aws ecr create-repository --repository-name "${{ inputs.app_name }}" --region eu-west-3
           aws ecr get-login-password --region eu-west-3 \
-            | docker login --username AWS --password-stdin "562346647831.dkr.ecr.eu-west-3.amazonaws.com"
+            | docker login --username AWS --password-stdin "804210702561.dkr.ecr.eu-west-3.amazonaws.com"
 
       - name: Compute image refs
         run: |
           TARGET_CLOUD="${{ inputs.target_cloud }}"
           GCP_REGISTRY="${{ vars.REGISTRY_URL }}"
-          ECR_REGISTRY="562346647831.dkr.ecr.eu-west-3.amazonaws.com"
+          ECR_REGISTRY="804210702561.dkr.ecr.eu-west-3.amazonaws.com"
           IMAGE_REF=""
           CACHE_REF=""
           ECR_REF=""
@@ -516,20 +516,20 @@ jobs:
         if: inputs.target_cloud != 'gcp'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::562346647831:role/github-ecr-push-role
+          role-to-assume: arn:aws:iam::804210702561:role/github-ecr-push-role
           aws-region: eu-west-3
 
       - name: ECR login
         if: inputs.target_cloud != 'gcp'
         run: |
           aws ecr get-login-password --region eu-west-3 \
-            | docker login --username AWS --password-stdin "562346647831.dkr.ecr.eu-west-3.amazonaws.com"
+            | docker login --username AWS --password-stdin "804210702561.dkr.ecr.eu-west-3.amazonaws.com"
 
       - name: Compute scan ref
         run: |
           TARGET_CLOUD="${{ inputs.target_cloud }}"
           GCP_REGISTRY="${{ vars.REGISTRY_URL }}"
-          ECR_REGISTRY="562346647831.dkr.ecr.eu-west-3.amazonaws.com"
+          ECR_REGISTRY="804210702561.dkr.ecr.eu-west-3.amazonaws.com"
           if [ "$TARGET_CLOUD" != "aws" ]; then
             SCAN_REF="${GCP_REGISTRY}/${{ inputs.app_name }}:${{ github.sha }}"
           else
@@ -609,7 +609,7 @@ jobs:
         if: inputs.target_cloud != 'gcp'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::562346647831:role/github-ecr-push-role
+          role-to-assume: arn:aws:iam::804210702561:role/github-ecr-push-role
           aws-region: eu-west-3
 
       - name: Remove vulnerable image from ECR
