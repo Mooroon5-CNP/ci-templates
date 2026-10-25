@@ -622,8 +622,11 @@ jobs:
           for f in "${DIR}"/*.yaml; do
             [ -f "$f" ] || continue
             grep -q '^kind: ContainerApp$' "$f" || continue
-            yq -i '(.spec.forProvider.template.container[] | select(.image | contains(strenv(PREFIX)))).image = strenv(IMAGE)' "$f"
-            grep -q "${IMAGE}" "$f" || { echo "[update-config] ERROR: ${f} has no image starting with ${PREFIX}" >&2; exit 1; }
+            # Premier conteneur, quelle que soit son image actuelle : le portail y met une image publique de
+            # départ (mcr.microsoft.com/k8se/quickstart), qui ne contient pas le préfixe de l'ACR. Un remplacement
+            # par préfixe laisserait cette image en place. Le portail n'écrit qu'un conteneur par claim.
+            yq -i '.spec.forProvider.template.container[0].image = strenv(IMAGE)' "$f"
+            grep -q "${IMAGE}" "$f" || { echo "[update-config] ERROR: ${f} has no container to update with ${IMAGE}" >&2; exit 1; }
             git add "$f"
             FOUND=$((FOUND + 1))
           done
