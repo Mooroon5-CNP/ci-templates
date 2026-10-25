@@ -100,6 +100,7 @@ jobs:
 | `app_port` | no | `"8080"` | Port the container listens on — passed as `APP_PORT` build-arg to Docker |
 | `config_repo_url` | yes | — | HTTPS URL of the GitOps config repository |
 | `target_cloud` | no | `"both"` | Registry target: `gcp`, `aws`, or `both` — see [section 4](#4-target_cloud--choosing-your-registry) |
+| `gitops_mode` | no | `"pipeline"` | `pipeline` keeps existing promotion jobs; `portal` leaves publication and production approval to CNP Portal |
 
 ### Secrets
 
@@ -461,9 +462,39 @@ Make sure `target_cloud: aws` is set in your `with:` block. The job condition is
 
 **How do I deploy to prod?**
 
+The following steps describe the default `gitops_mode: pipeline` behavior.
+
 1. Open a Pull Request: `main` → `prod`
 2. Get it approved and merged
 3. The pipeline starts automatically on the `prod` branch
 4. After scan passes, GitHub pauses at `update-config-prod` and waits for manual approval
 5. Go to **Actions → the run → Review deployments → Approve and deploy**
 6. ArgoCD picks up the new tag and syncs the prod cluster
+
+### Portal-managed environments
+
+New portal workflows pass `gitops_mode: portal` to this reusable pipeline. Lint,
+tests, dependency and secret scans, image build/push, and the blocking image scan
+still run. The three `update-config-*` jobs do not run in this mode: the portal
+publishes environment-specific GitOps files using its GitHub App after verifying
+the successful workflow result.
+
+- `main` builds are eligible for automatic dev publication by the portal.
+- `prod` builds prepare production candidates; a manager approves them in the
+  portal before the App merges the protected production files.
+- An unknown `gitops_mode` also disables all publication jobs, rather than
+  falling back to legacy writes.
+
+Existing callers that omit the input retain `gitops_mode: pipeline`. The portal
+feature and this workflow change must both be available before onboarding a new
+environment. During branch testing the portal's template ref must point to the
+companion CI branch; after this change merges, `@main` supports the new input.
+
+Run the ownership contract locally with:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+These tests require PyYAML and evaluate the workflow's actual publication gates
+for dev, prod, cloud targets, successful/failed scans, and portal/invalid modes.

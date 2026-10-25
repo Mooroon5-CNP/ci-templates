@@ -34,6 +34,11 @@ jobs:
             .github/workflows/build-push-artifact-registry.yml \
             example-app/.github/workflows/ci.yml
 
+      - name: Test deployment ownership contract
+        run: |
+          python -m pip install PyYAML==6.0.3
+          python -m unittest discover -s tests -v
+
   actionlint:
     runs-on: ubuntu-latest
     needs: [yamllint]
