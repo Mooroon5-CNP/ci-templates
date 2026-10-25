@@ -50,79 +50,32 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Stage: detect — figure out which language(s) the app uses, so lint/test
-  # know which toolchain to run. Scans every top-level directory (whatever
-  # it's named — front/back, client/server, web/api, ...) and keeps the ones
-  # that contain a recognized language marker file. If no subdirectory
-  # qualifies, falls back to detecting at the repo root instead — this keeps
-  # every currently onboarded app (cnp-portal, exemple-app-cnp, etc., all
-  # root-level Node today) working unchanged. Only one level deep is scanned
-  # (a nested path like apps/web/ won't be picked up on its own).
+  # know which toolchain to run. Logic lives in the detect-stack action: it
+  # scans every top-level directory (front/back, web/api, ...) for a language
+  # marker file, falls back to the repo root for monoliths, and fails on a
+  # directory that mixes several languages.
   #
-  # To support an additional language: add one more `elif` branch in
-  # detect_lang() below, plus the matching setup/lint/test steps in the
-  # "lint" and "test" jobs (search for the language name, e.g. "python").
+  # Language-specific logic (setup, version, cache, lint, test) lives in one
+  # action per language: .github/actions/lang-<x>. They are referenced by
+  # remote path because `uses: ./...` would resolve inside the APP's repo, and
+  # `uses:` cannot take an expression, hence one `if:` line per language.
+  # Keep the @main ref in sync with the ref apps use for this workflow.
+  #
+  # To support an additional language: see "Adding a language" in the README.
   # ---------------------------------------------------------------------------
 
   detect-stack:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.detect.outputs.matrix }}
+      has_targets: ${{ steps.detect.outputs.has_targets }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
 
       - id: detect
-        run: |
-          detect_lang() {
-            local dir="$1"
-            if   [ -f "$dir/package.json" ]; then echo "node"
-            elif [ -f "$dir/requirements.txt" ] || [ -f "$dir/pyproject.toml" ]; then echo "python"
-            elif [ -f "$dir/go.mod" ]; then echo "go"
-            elif [ -f "$dir/pom.xml" ] || [ -f "$dir/build.gradle" ] || [ -f "$dir/build.gradle.kts" ]; then echo "java"
-            elif [ -f "$dir/CMakeLists.txt" ]; then echo "cpp"
-            else echo ""
-            fi
-          }
-
-          targets="[]"
-          add_target() {
-            local path="$1" name="$2" lang="$3"
-            targets=$(echo "$targets" | jq -c --arg path "$path" --arg name "$name" --arg lang "$lang" \
-              '. + [{"path":$path,"name":$name,"lang":$lang}]')
-          }
-
-          # Directories that are never an app's own source root, regardless
-          # of language — skip them so they can't be mistaken for a target.
-          EXCLUDE_DIRS=".git .github node_modules venv .venv __pycache__ dist build target vendor .idea .vscode"
-          is_excluded() {
-            local dir="$1"
-            for ex in $EXCLUDE_DIRS; do
-              [ "$dir" = "$ex" ] && return 0
-            done
-            return 1
-          }
-
-          for entry in */; do
-            dir="${entry%/}"
-            is_excluded "$dir" && continue
-            lang=$(detect_lang "$dir")
-            [ -n "$lang" ] && add_target "$dir" "$dir" "$lang"
-          done
-
-          # No recognized subdirectory anywhere — this is a monolith (or an
-          # unrecognized layout), so check the repo root itself instead.
-          if [ "$targets" = "[]" ]; then
-            root_lang=$(detect_lang .)
-            if [ -n "$root_lang" ]; then
-              add_target "." "root" "$root_lang"
-            else
-              echo "::warning::No recognized language found anywhere in the repo (checked top-level directories and repo root) — lint/test will be skipped."
-            fi
-          fi
-
-          echo "Detected targets: $targets"
-          echo "matrix={\"include\":$targets}" >> "$GITHUB_OUTPUT"
+        uses: Mooroon5-CNP/ci-templates/.github/actions/detect-stack@main
 
   # ---------------------------------------------------------------------------
   # Stage: lint — parallel (one job per detected target, plus Dockerfile lint)
@@ -131,7 +84,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     needs: [detect-stack]
-    if: success() && needs.detect-stack.outputs.matrix != '{"include":[]}'
+    if: success() && needs.detect-stack.outputs.has_targets == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.detect-stack.outputs.matrix) }}
@@ -140,81 +93,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Lint (node)
         if: matrix.lang == 'node'
-        uses: actions/setup-node@v4
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-node@main
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: ${{ matrix.path }}/package-lock.json
+          step: lint
+          path: ${{ matrix.path }}
 
-      - name: Setup Python
+      - name: Lint (python)
         if: matrix.lang == 'python'
-        uses: actions/setup-python@v5
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-python@main
         with:
-          python-version: '3.12'
+          step: lint
+          path: ${{ matrix.path }}
 
-      - name: Setup Go
+      - name: Lint (go)
         if: matrix.lang == 'go'
-        uses: actions/setup-go@v5
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-go@main
         with:
-          go-version: 'stable'
+          step: lint
+          path: ${{ matrix.path }}
 
-      - name: Setup Java
+      - name: Lint (java)
         if: matrix.lang == 'java'
-        uses: actions/setup-java@v4
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-java@main
         with:
-          distribution: 'temurin'
-          java-version: '21'
+          step: lint
+          path: ${{ matrix.path }}
 
-      - name: Lint (node — ESLint)
-        if: matrix.lang == 'node'
-        working-directory: ${{ matrix.path }}
-        run: |
-          if [ ! -f package-lock.json ]; then
-            echo "[lint:${{ matrix.name }}] ERROR: package-lock.json not found." >&2
-            echo "[lint:${{ matrix.name }}] Run 'npm install' locally and commit the lockfile." >&2
-            exit 1
-          fi
-          npm ci --prefer-offline
-          if ! npm run lint -- --help > /dev/null 2>&1; then
-            if ! npx --no-install eslint --version > /dev/null 2>&1; then
-              echo "[lint:${{ matrix.name }}] ERROR: eslint not found in node_modules." >&2
-              exit 1
-            fi
-          fi
-          npm run lint
-
-      - name: Lint (python — flake8)
-        if: matrix.lang == 'python'
-        working-directory: ${{ matrix.path }}
-        run: |
-          pip install --quiet flake8
-          flake8 .
-
-      - name: Lint (go — go vet)
-        if: matrix.lang == 'go'
-        working-directory: ${{ matrix.path }}
-        run: go vet ./...
-
-      - name: Lint (java — Maven compile)
-        if: matrix.lang == 'java' && hashFiles(format('{0}/pom.xml', matrix.path)) != ''
-        working-directory: ${{ matrix.path }}
-        run: mvn -q -B compile
-
-      - name: Lint (java — Gradle compile)
-        if: matrix.lang == 'java' && hashFiles(format('{0}/pom.xml', matrix.path)) == ''
-        working-directory: ${{ matrix.path }}
-        run: |
-          chmod +x ./gradlew
-          ./gradlew compileJava
-
-      - name: Lint (cpp — cppcheck)
+      - name: Lint (cpp)
         if: matrix.lang == 'cpp'
-        working-directory: ${{ matrix.path }}
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq cppcheck
-          cppcheck --error-exitcode=1 --quiet .
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-cpp@main
+        with:
+          step: lint
+          path: ${{ matrix.path }}
 
   lint-hadolint:
     runs-on: ubuntu-latest
@@ -224,20 +136,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Lint Dockerfile
-        run: |
-          if [ ! -f Dockerfile ]; then
-            echo "[lint-hadolint] ERROR: Dockerfile not found at repository root." >&2
-            exit 1
-          fi
-          # Pinned on purpose: a floating tag (latest-alpine) lets upstream
-          # releases add new rules and break every app's CI overnight with no
-          # change on our side (v2.15.0 started flagging shell-form
-          # HEALTHCHECK CMD as DL3025). Bump this deliberately, in its own PR.
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            hadolint/hadolint:v2.14.0-alpine \
-            hadolint Dockerfile
+        uses: Mooroon5-CNP/ci-templates/.github/actions/dockerfile-lint@main
 
   # ---------------------------------------------------------------------------
   # Stage: test — parallel (one job per detected target)
@@ -246,6 +145,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     needs: [detect-stack, lint, lint-hadolint]
+    if: success() && needs.detect-stack.outputs.has_targets == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.detect-stack.outputs.matrix) }}
@@ -254,78 +154,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        if: matrix.lang == 'node'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: ${{ matrix.path }}/package-lock.json
-
-      - name: Setup Python
-        if: matrix.lang == 'python'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Setup Go
-        if: matrix.lang == 'go'
-        uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-
-      - name: Setup Java
-        if: matrix.lang == 'java'
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
       - name: Test (node)
         if: matrix.lang == 'node'
-        working-directory: ${{ matrix.path }}
-        run: |
-          npm ci --prefer-offline
-          npm test
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-node@main
+        with:
+          step: test
+          path: ${{ matrix.path }}
 
       - name: Test (python)
         if: matrix.lang == 'python'
-        working-directory: ${{ matrix.path }}
-        run: |
-          [ -f requirements.txt ] && pip install --quiet -r requirements.txt
-          pip install --quiet pytest
-          pytest --junitxml=test-results.xml
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-python@main
+        with:
+          step: test
+          path: ${{ matrix.path }}
 
       - name: Test (go)
         if: matrix.lang == 'go'
-        working-directory: ${{ matrix.path }}
-        run: go test ./...
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-go@main
+        with:
+          step: test
+          path: ${{ matrix.path }}
 
-      - name: Test (java — Maven)
-        if: matrix.lang == 'java' && hashFiles(format('{0}/pom.xml', matrix.path)) != ''
-        working-directory: ${{ matrix.path }}
-        run: mvn -q -B test
+      - name: Test (java)
+        if: matrix.lang == 'java'
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-java@main
+        with:
+          step: test
+          path: ${{ matrix.path }}
 
-      - name: Test (java — Gradle)
-        if: matrix.lang == 'java' && hashFiles(format('{0}/pom.xml', matrix.path)) == ''
-        working-directory: ${{ matrix.path }}
-        run: |
-          chmod +x ./gradlew
-          ./gradlew test
-
-      - name: Test (cpp — CMake + CTest)
+      - name: Test (cpp)
         if: matrix.lang == 'cpp'
-        working-directory: ${{ matrix.path }}
-        run: |
-          cmake -B build
-          cmake --build build
-          ctest --test-dir build --output-on-failure
+        uses: Mooroon5-CNP/ci-templates/.github/actions/lang-cpp@main
+        with:
+          step: test
+          path: ${{ matrix.path }}
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results-${{ matrix.name }}
-          path: ${{ matrix.path }}/test-results.xml
+          path: |
+            ${{ matrix.path }}/test-results.xml
+            ${{ matrix.path }}/target/surefire-reports/*.xml
+            ${{ matrix.path }}/build/test-results/test/*.xml
           if-no-files-found: ignore
           retention-days: 7
 
@@ -335,7 +206,14 @@ jobs:
 
   scan-secrets:
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [detect-stack, lint-hadolint, test]
+    # Run when the tests passed, or when there was nothing to lint/test (no
+    # recognized language): the Dockerfile is then the only contract and the
+    # scans and build must still happen. A lint or test failure blocks them.
+    if: >-
+      ${{ !cancelled() && needs.detect-stack.result == 'success' &&
+      (needs.test.result == 'success' ||
+      (needs.detect-stack.outputs.has_targets == 'false' && needs.lint-hadolint.result == 'success')) }}
     permissions:
       contents: read
     steps:
@@ -364,7 +242,14 @@ jobs:
 
   scan-deps:
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [detect-stack, lint-hadolint, test]
+    # Run when the tests passed, or when there was nothing to lint/test (no
+    # recognized language): the Dockerfile is then the only contract and the
+    # scans and build must still happen. A lint or test failure blocks them.
+    if: >-
+      ${{ !cancelled() && needs.detect-stack.result == 'success' &&
+      (needs.test.result == 'success' ||
+      (needs.detect-stack.outputs.has_targets == 'false' && needs.lint-hadolint.result == 'success')) }}
     permissions:
       contents: read
     steps:
@@ -493,6 +378,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
+      contents: read
       id-token: write
     steps:
       - name: Authenticate to Google Cloud via Workload Identity Federation
@@ -540,30 +426,10 @@ jobs:
       - name: Pull image
         run: docker pull "$SCAN_REF"
 
-      - name: Scan image — CRITICAL (blocking)
-        run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            aquasec/trivy:latest image \
-            --severity CRITICAL \
-            --exit-code 1 \
-            --ignore-unfixed \
-            --format table \
-            --output /workspace/trivy-report.txt \
-            "$SCAN_REF"
-          cat trivy-report.txt
-
-      - name: Scan image — HIGH/MEDIUM (non-blocking)
-        run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:latest image \
-            --severity HIGH,MEDIUM \
-            --exit-code 0 \
-            --ignore-unfixed \
-            --format table \
-            "$SCAN_REF" || true
+      - name: Scan image
+        uses: Mooroon5-CNP/ci-templates/.github/actions/image-scan@main
+        with:
+          image_ref: ${{ env.SCAN_REF }}
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -663,6 +529,9 @@ jobs:
             sed -i -E \
               "s|(${REGISTRY_URL}/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
               "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
+            # Datadog unified service tagging: DD_VERSION follows the image tag (CNP-037)
+            sed -i "/name: DD_VERSION/{n;s|value:.*|value: \"${COMMIT_SHA}\"|}" \
+              "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
             git add "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
           fi
 
@@ -721,6 +590,9 @@ jobs:
           if [ -f "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml" ]; then
             sed -i -E \
               "s|(${REGISTRY_URL}/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
+              "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
+            # Datadog unified service tagging: DD_VERSION follows the image tag (CNP-037)
+            sed -i "/name: DD_VERSION/{n;s|value:.*|value: \"${COMMIT_SHA}\"|}" \
               "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
             git add "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
           fi

@@ -133,10 +133,10 @@ The image tag is always the full commit SHA (`${{ github.sha }}`).
 
 ### Stage 0 — Detect
 
-Job: **`detect-stack`** — scans top-level directories (or the repo root, if
-none qualify) for a recognized language marker file, and outputs a matrix
-consumed by `lint` and `test`. See [section 9](#9-what-your-app-must-provide)
-for the directory convention.
+Job: **`detect-stack`** (action `.github/actions/detect-stack`) — scans
+top-level directories (or the repo root, if none qualify) for a recognized
+language marker file, and outputs a matrix consumed by `lint` and `test`. See
+[section 9](#9-what-your-app-must-provide) for the directory convention.
 
 | Language | Marker file(s) |
 |---|---|
@@ -146,21 +146,32 @@ for the directory convention.
 | Java | `pom.xml` (Maven) or `build.gradle(.kts)` (Gradle) |
 | C++ | `CMakeLists.txt` |
 
-A target with no recognized language gets a workflow warning and is skipped
-(not failed).
+- **No recognized language**: a workflow warning, `lint` and `test` are
+  skipped, and the pipeline **continues** with Dockerfile lint, scans and
+  build — the Dockerfile is the minimal contract.
+- **A directory with several languages** (e.g. `package.json` **and**
+  `requirements.txt` side by side) is ambiguous and **fails** `detect-stack`
+  with a message naming the directory. Put each language in its own top-level
+  directory.
 
 ### Stage 1 — Lint (parallel)
 
 | Job | What it runs | Blocks on |
 |---|---|---|
-| `lint` (matrix, one per detected target) | ESLint (node) / flake8 (python) / `go vet` (go) / Maven or Gradle compile (java) / cppcheck (cpp) | Any lint error for that target; Node also fails if `package-lock.json` is missing |
-| `lint-hadolint` | `hadolint/hadolint:v2.14.0-alpine` (pinned) on `Dockerfile` | Any Hadolint error |
+| `lint` (matrix, one per detected target) | ESLint (node) / flake8 (python) / `go vet` + `gofmt` (go) / Maven or Gradle compile (java) / cppcheck (cpp) | Any lint error for that target; Node also fails if `package-lock.json` is missing; Go fails on unformatted files; Gradle fails if `gradlew` is not committed |
+| `lint-hadolint` | `hadolint/hadolint:v2.14.0-alpine` (pinned) on `Dockerfile` — action `dockerfile-lint`, same for every language | Missing Dockerfile, any Hadolint error |
 
 ### Stage 2 — Test
 
 | Job | What it runs | Artifact |
 |---|---|---|
-| `test` (matrix, one per detected target) | `npm test` (node) / `pytest` (python) / `go test` (go) / Maven or Gradle test (java) / CMake + CTest (cpp) | `test-results-<target-name>.xml` (7-day retention, `if-no-files-found: ignore` — not every language produces one) |
+| `test` (matrix, one per detected target) | `npm test` (node) / `pytest` (python; also installs `requirements.txt` and a `pyproject.toml` `[project]`) / `go test` (go) / Maven or Gradle test (java) / CMake + CTest (cpp; **fails if no test is registered**) | `test-results-<target-name>` (7-day retention, `if-no-files-found: ignore`): `test-results.xml` (pytest) and the Surefire / Gradle XML reports |
+
+Each language's setup, version, cache, lint and test live in one action,
+`.github/actions/lang-<x>`, with the same inputs (`step`, `path`, `version`).
+Versions are read from the repo when possible: `.nvmrc` / `engines.node`
+(Node, default 20), `.python-version` (Python, default 3.12), `go.mod` (Go),
+Java 21. npm, pip, Maven, Gradle and Go caches are enabled.
 
 ### Stage 3 — Security scans (parallel, after test)
 
@@ -314,6 +325,7 @@ Production promotion (`update-config-prod`) requires a manual approval in the Gi
 The pipeline auto-detects language(s) for lint/test by scanning **top-level
 directories only** (see `detect-stack` in `pipeline.yml`):
 
+- **One language per directory.** Mixing languages in one directory is rejected.
 - **Single-language app** (most apps today): put your language's marker file
   (`package.json`, `requirements.txt`/`pyproject.toml`, `go.mod`,
   `pom.xml`/`build.gradle(.kts)`, or `CMakeLists.txt`) at the **repo root**.
@@ -354,10 +366,10 @@ top-level directory — see [above](#language-layout-single-app-or-frontback-spl
 | Language | Files needed for `lint`/`test` to run |
 |---|---|
 | Node.js | `package.json` with `"lint"` and `"test"` scripts, plus a committed `package-lock.json` (pipeline uses `npm ci`, fails if missing) |
-| Python | `requirements.txt` or `pyproject.toml`; test files discoverable by `pytest` (e.g. `test_*.py`) |
-| Go | `go.mod`; `go vet` and `go test ./...` run as-is, no extra config needed |
+| Python | `requirements.txt` or `pyproject.toml` (with a `[project]` table, installed as `.[test]` so declare pytest and your test deps in a `test` extra); test files discoverable by `pytest` (e.g. `test_*.py`) |
+| Go | `go.mod`; `go vet`, `gofmt` (code must be formatted) and `go test ./...` run as-is, no extra config needed |
 | Java | `pom.xml` (Maven) or `build.gradle`/`build.gradle.kts` (Gradle, needs a committed `gradlew` wrapper) |
-| C++ | `CMakeLists.txt` configured for `ctest`; `cppcheck` is installed by the pipeline, no setup needed |
+| C++ | `CMakeLists.txt` with `enable_testing()` + `add_test()` (a project with no registered test fails); `cppcheck` is installed by the pipeline, no setup needed |
 
 ### `package.json` scripts (Node targets)
 
@@ -435,6 +447,26 @@ git commit -m "chore: add eslint"
 
 ---
 
+**`detect-stack` fails: "contains markers of several languages"**
+
+A single directory has e.g. both `package.json` and `requirements.txt`. The
+pipeline will not guess which one is the app: move each language into its own
+top-level directory (see [section 9](#language-layout-single-app-or-frontback-split)).
+
+---
+
+**`lint` (java target) fails: "Gradle wrapper missing"**
+
+Run `gradle wrapper` locally and commit `gradlew` and `gradle/wrapper/`.
+
+---
+
+**`lint` (go target) fails on `gofmt`**
+
+Run `gofmt -w .` and commit.
+
+---
+
 **`scan-secrets` fails: "secret detected"**
 
 Gitleaks found a secret in the git history. Check `gitleaks-report.json` in the job artifacts to identify what and where. Rotate the credential immediately, then use `git filter-repo` or BFG to remove it from history.
@@ -467,3 +499,51 @@ Make sure `target_cloud: aws` is set in your `with:` block. The job condition is
 4. After scan passes, GitHub pauses at `update-config-prod` and waits for manual approval
 5. Go to **Actions → the run → Review deployments → Approve and deploy**
 6. ArgoCD picks up the new tag and syncs the prod cluster
+
+---
+
+## 11. For the platform team: actions, fixtures and tests
+
+```
+.github/
+├── workflows/
+│   ├── pipeline.yml            ← the single entry point apps call (@main)
+│   ├── ci.yml                  ← YAML validation of this repo (yamllint, actionlint)
+│   └── test-templates.yml      ← behaviour tests of the actions, on fixtures/
+└── actions/
+    ├── detect-stack/           ← language(s) of the app → job matrix
+    ├── lang-node|python|go|java|cpp/   ← step: lint|test, path, version?
+    ├── dockerfile-lint/        ← existence + pinned hadolint (all languages)
+    └── image-scan/             ← Trivy image scan (all languages)
+fixtures/                       ← one minimal project per language and per edge case
+```
+
+`pipeline.yml` references the actions by `Mooroon5-CNP/ci-templates/...@main`
+(a `uses: ./...` would resolve inside the *app's* repo). A change that touches
+both `pipeline.yml` and an action must therefore be merged as **one** PR.
+`test-templates.yml`, in contrast, uses the actions of the PR's own checkout.
+
+### Fixtures
+
+| Fixture | Expected |
+|---|---|
+| `node-ok`, `python-requirements`, `python-pyproject`, `go-ok`, `java-maven`, `java-gradle`, `cpp-ok` | detect, lint, test, Dockerfile lint, build and image scan all pass |
+| `fullstack` (`web/` node + `api/` python) | two targets |
+| `no-language` | empty matrix, no failure |
+| `polyglot-root` | `detect-stack` fails |
+| `node-no-lockfile`, `go-badformat`, `java-gradle-no-wrapper` | `lint` fails |
+| `bad-dockerfile` and a missing Dockerfile | `dockerfile-lint` fails |
+
+The image scan in `test-templates.yml` is **non-blocking** on purpose (a new
+upstream CVE in a base image must not break this repo); it checks that the
+scanner runs and writes `trivy-report.txt`. Blocking behaviour is the
+`blocking` input of `image-scan`, which the pipeline leaves at `true`.
+
+### Adding a language
+
+1. `detect-stack/action.yml`: add the marker file to `langs_of()`.
+2. Create `actions/lang-<x>/action.yml` with the same `step` / `path` / `version` inputs.
+3. Add one `if: matrix.lang == '<x>'` step to the `lint` and `test` jobs of `pipeline.yml`.
+4. Add `fixtures/<x>-ok` (with a Dockerfile that passes hadolint) and, if useful, a rejected fixture.
+5. Add the fixture to `detect-stack`, `languages` and `images` in `test-templates.yml`.
+6. Update the language tables in this README.
