@@ -41,6 +41,11 @@ on:
         required: false
         default: "both"
         description: "Target container registry: gcp | aws | both"
+      gitops_mode:
+        type: string
+        required: false
+        default: "pipeline"
+        description: "pipeline: legacy GitOps promotion; portal: scanned build, publication managed by CNP Portal"
     secrets:
       CONFIG_REPO_TOKEN:
         required: true
@@ -627,7 +632,9 @@ jobs:
   update-config-dev:
     runs-on: ubuntu-latest
     needs: [scan-image]
-    if: ${{ github.ref == 'refs/heads/main' && needs.scan-image.result == 'success' && inputs.target_cloud != 'aws' }}
+    if: >-
+      ${{ inputs.gitops_mode == 'pipeline' && github.ref == 'refs/heads/main' &&
+      needs.scan-image.result == 'success' && inputs.target_cloud != 'aws' }}
     permissions:
       contents: read
     steps:
@@ -685,7 +692,9 @@ jobs:
   update-config-prod:
     runs-on: ubuntu-latest
     needs: [scan-image]
-    if: ${{ github.ref == 'refs/heads/prod' && needs.scan-image.result == 'success' && inputs.target_cloud != 'aws' }}
+    if: >-
+      ${{ inputs.gitops_mode == 'pipeline' && github.ref == 'refs/heads/prod' &&
+      needs.scan-image.result == 'success' && inputs.target_cloud != 'aws' }}
     environment: production
     permissions:
       contents: read
@@ -738,7 +747,9 @@ jobs:
   update-config-aws:
     runs-on: ubuntu-latest
     needs: [scan-image]
-    if: ${{ github.ref == 'refs/heads/main' && needs.scan-image.result == 'success' && inputs.target_cloud != 'gcp' }}
+    if: >-
+      ${{ inputs.gitops_mode == 'pipeline' && github.ref == 'refs/heads/main' &&
+      needs.scan-image.result == 'success' && inputs.target_cloud != 'gcp' }}
     permissions:
       contents: read
     steps:
