@@ -572,38 +572,41 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------
-  # Stage: push — mise à jour GitOps du claim ContainerApp (dev, automatique sur main)
+  # Stage: push — mise à jour GitOps du claim ContainerApp (automatique sur main)
   #
-  # Le claim se trouve dans apps/<app>/crossplane/<env>/ (un fichier par ressource, kind ContainerApp).
-  # L'image est mise à jour avec yq et non sed (cf. ANALYSE.md). Si aucun claim ContainerApp n'est trouvé,
-  # le job ÉCHOUE avec un message : un pipeline vert qui ne déploie rien serait pire.
+  # Format À PLAT, comme les apps GCP du portail (ex. app4-pixelcam) : le claim se trouve dans
+  # apps/<app>/crossplane/ (un fichier par ressource, kind ContainerApp), repris par l'ApplicationSet
+  # cloudrun-autodiscovery. Un seul environnement pour l'instant : le découpage dev/prod viendra avec
+  # les ApplicationSets dev/prod (travail en cours dans l'équipe).
+  #
+  # L'image est mise à jour avec yq et non sed (cf. ANALYSE.md). Si aucun claim ContainerApp n'est
+  # trouvé, le job ÉCHOUE avec un message : un pipeline vert qui ne déploie rien serait pire.
   # ---------------------------------------------------------------------------
 
-  update-config-dev:
+  update-config:
     runs-on: ubuntu-latest
     needs: [scan-image]
     if: ${{ github.ref == 'refs/heads/main' && needs.scan-image.result == 'success' }}
     permissions:
       contents: read
     steps:
-      - name: Promote to dev
+      - name: Promote
         env:
           CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
           CONFIG_REPO_URL: ${{ inputs.config_repo_url }}
           APP_NAME: ${{ inputs.app_name }}
           COMMIT_SHA: ${{ github.sha }}
           ACR_LOGIN_SERVER: ${{ vars.AZURE_ACR_LOGIN_SERVER }}
-          ENV_NAME: dev
         run: |
           set -euo pipefail
           for var in CONFIG_REPO_TOKEN COMMIT_SHA APP_NAME CONFIG_REPO_URL ACR_LOGIN_SERVER; do
             eval "val=\$$var"
             if [ -z "$val" ]; then
-              echo "[update-config-dev] ERROR: required variable '$var' is not set" >&2
+              echo "[update-config] ERROR: required variable '$var' is not set" >&2
               exit 1
             fi
           done
-          command -v yq >/dev/null || { echo "[update-config-dev] ERROR: yq is not available on this runner" >&2; exit 1; }
+          command -v yq >/dev/null || { echo "[update-config] ERROR: yq is not available on this runner" >&2; exit 1; }
 
           git config --global user.email "ci-bot@github.local"
           git config --global user.name "GitHub Actions Bot"
@@ -614,22 +617,22 @@ jobs:
 
           export PREFIX="${ACR_LOGIN_SERVER}/${APP_NAME}:"
           export IMAGE="${PREFIX}${COMMIT_SHA}"
-          DIR="apps/${APP_NAME}/crossplane/${ENV_NAME}"
+          DIR="apps/${APP_NAME}/crossplane"
           FOUND=0
           for f in "${DIR}"/*.yaml; do
             [ -f "$f" ] || continue
             grep -q '^kind: ContainerApp$' "$f" || continue
             yq -i '(.spec.forProvider.template.container[] | select(.image | contains(strenv(PREFIX)))).image = strenv(IMAGE)' "$f"
-            grep -q "${IMAGE}" "$f" || { echo "[update-config-dev] ERROR: ${f} has no image starting with ${PREFIX}" >&2; exit 1; }
+            grep -q "${IMAGE}" "$f" || { echo "[update-config] ERROR: ${f} has no image starting with ${PREFIX}" >&2; exit 1; }
             git add "$f"
             FOUND=$((FOUND + 1))
           done
           if [ "$FOUND" -eq 0 ]; then
-            echo "[update-config-dev] ERROR: no ContainerApp claim in ${DIR} for ${PREFIX}*" >&2
+            echo "[update-config] ERROR: no ContainerApp claim in ${DIR} for ${PREFIX}*" >&2
             exit 1
           fi
 
-          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to dev [ci skip]"
+          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} [ci skip]"
 
           for attempt in 1 2 3 4 5; do
             if git push "${AUTHED_URL}" HEAD:main; then echo "pushed (attempt $attempt)"; break; fi
@@ -639,63 +642,3 @@ jobs:
             sleep $((RANDOM % 4 + 2))
             [ "$attempt" = "5" ] && { echo "push failed after 5 attempts"; exit 1; }
           done
-
-  # ---------------------------------------------------------------------------
-  # Stage: push — mise à jour GitOps du claim ContainerApp (prod, validation manuelle via l'environnement)
-  # ---------------------------------------------------------------------------
-
-  update-config-prod:
-    runs-on: ubuntu-latest
-    needs: [scan-image]
-    if: ${{ github.ref == 'refs/heads/prod' && needs.scan-image.result == 'success' }}
-    environment: production
-    permissions:
-      contents: read
-    steps:
-      - name: Promote to prod
-        env:
-          CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
-          CONFIG_REPO_URL: ${{ inputs.config_repo_url }}
-          APP_NAME: ${{ inputs.app_name }}
-          COMMIT_SHA: ${{ github.sha }}
-          ACR_LOGIN_SERVER: ${{ vars.AZURE_ACR_LOGIN_SERVER }}
-          ENV_NAME: prod
-        run: |
-          set -euo pipefail
-          for var in CONFIG_REPO_TOKEN COMMIT_SHA APP_NAME CONFIG_REPO_URL ACR_LOGIN_SERVER; do
-            eval "val=\$$var"
-            if [ -z "$val" ]; then
-              echo "[update-config-prod] ERROR: required variable '$var' is not set" >&2
-              exit 1
-            fi
-          done
-          command -v yq >/dev/null || { echo "[update-config-prod] ERROR: yq is not available on this runner" >&2; exit 1; }
-
-          git config --global user.email "ci-bot@github.local"
-          git config --global user.name "GitHub Actions Bot"
-
-          AUTHED_URL="https://x-access-token:${CONFIG_REPO_TOKEN}@${CONFIG_REPO_URL#https://}"
-          git clone --depth=1 "${AUTHED_URL}" config-repo
-          cd config-repo
-
-          export PREFIX="${ACR_LOGIN_SERVER}/${APP_NAME}:"
-          export IMAGE="${PREFIX}${COMMIT_SHA}"
-          DIR="apps/${APP_NAME}/crossplane/${ENV_NAME}"
-          FOUND=0
-          for f in "${DIR}"/*.yaml; do
-            [ -f "$f" ] || continue
-            grep -q '^kind: ContainerApp$' "$f" || continue
-            yq -i '(.spec.forProvider.template.container[] | select(.image | contains(strenv(PREFIX)))).image = strenv(IMAGE)' "$f"
-            grep -q "${IMAGE}" "$f" || { echo "[update-config-prod] ERROR: ${f} has no image starting with ${PREFIX}" >&2; exit 1; }
-            git add "$f"
-            FOUND=$((FOUND + 1))
-          done
-          if [ "$FOUND" -eq 0 ]; then
-            echo "[update-config-prod] ERROR: no ContainerApp claim in ${DIR} for ${PREFIX}*" >&2
-            exit 1
-          fi
-
-          git commit -m "chore(${APP_NAME}): promote ${COMMIT_SHA:0:7} to prod [ci skip]"
-
-          git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
-          git push "${AUTHED_URL}" HEAD
