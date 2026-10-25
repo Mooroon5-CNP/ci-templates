@@ -64,6 +64,41 @@ The new portal implementation's `getV2ServiceStatus('app4-pixelcam')` was then
 called against this live resource and returned `ready: true`, the expected image
 and URI, and `failure: null`. No access token or secret is included here.
 
+## Application ownership and rollout prerequisites
+
+A subsequent read-only Argo CD API inspection found:
+
+| Object | Active configuration |
+|---|---|
+| ApplicationSet `cloudrun-autodiscovery` | The only active ApplicationSet; scans `apps/*/crossplane`, generates `{{path[1]}}-cloudrun`, uses project `default` |
+| AppProjects | Only `default` and `platform` are present |
+| Legacy generated Applications | `app4-pixelcam-cloudrun`, `cnp-test-node-cloudrun`, `cnp-test-python-cloudrun`, `cnp-test-fullstack-cloudrun`, `exemple-app-cnp-cloudrun` |
+
+The repository already contains canonical definitions for
+`crossplane-autodiscovery-dev` / `crossplane-autodiscovery-prod` and
+`team-cnp-dev` / `team-cnp-prod`, but they were not active in the inspected
+cluster. The canonical sets generate `<app>-dev` and `<app>-prod` respectively.
+These projects are platform rollout prerequisites. A portal preflight should
+report their absence; it must not silently use the unrestricted `default`
+project for production.
+
+The legacy directory scanner also sees an environment-only parent directory
+such as `apps/new-app/crossplane` when only its `dev/` child has manifests.
+Creating a second environment scanner with different Application names would
+therefore require explicit ownership handling. New code should reuse the
+canonical environment sets and preserve all existing legacy resources.
+
+An offline check of replacing legacy directory discovery with root
+`kustomization.yaml` file discovery found that this would remove
+`exemple-app-cnp-cloudrun` from generated membership: its current Git parent has
+only `README-aws.md` plus nested dev/prod files. That migration is not safe to
+apply blindly because deleting the generated Application may cascade to cloud
+resources. No discovery configuration was changed during verification.
+
+The [Argo CD Git generator documentation](https://argo-cd.readthedocs.io/en/stable/operator-manual/applicationset/Generators-Git/)
+supports file-based discovery, but membership and resource deletion behavior
+must be assessed against the actual repository before adopting it.
+
 ## Companion workflow checks
 
 - Six workflow contract tests pass, including the default legacy promotion
