@@ -59,11 +59,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
       - name: Verify lockfile
         run: |
           if [ ! -f package-lock.json ]; then
@@ -71,6 +66,11 @@ jobs:
             echo "[lint-eslint] Run 'npm install' locally and commit the lockfile." >&2
             exit 1
           fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
 
       - run: npm ci --prefer-offline
 
@@ -117,7 +117,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - run: npm ci --prefer-offline
