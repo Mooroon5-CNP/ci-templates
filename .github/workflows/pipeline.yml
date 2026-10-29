@@ -670,6 +670,9 @@ jobs:
             sed -i -E \
               "s|(${REGISTRY_URL}/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
               "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
+            # Datadog unified service tagging: DD_VERSION follows the image tag (CNP-037)
+            sed -i "/name: DD_VERSION/{n;s|value:.*|value: \"${COMMIT_SHA}\"|}" \
+              "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
             git add "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
           fi
 
@@ -730,6 +733,9 @@ jobs:
           if [ -f "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml" ]; then
             sed -i -E \
               "s|(${REGISTRY_URL}/${APP_NAME}):[^\"]*|\1:${COMMIT_SHA}|" \
+              "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
+            # Datadog unified service tagging: DD_VERSION follows the image tag (CNP-037)
+            sed -i "/name: DD_VERSION/{n;s|value:.*|value: \"${COMMIT_SHA}\"|}" \
               "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
             git add "apps/${APP_NAME}/crossplane/cloudrun-claim.yaml"
           fi
