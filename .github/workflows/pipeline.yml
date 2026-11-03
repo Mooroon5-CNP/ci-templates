@@ -41,6 +41,11 @@ on:
         required: false
         default: "both"
         description: "Target container registry: gcp | aws | both"
+      node_version:
+        type: string
+        required: false
+        default: "20"
+        description: "Node.js version used for Node lint and test jobs"
       gitops_mode:
         type: string
         required: false
@@ -149,7 +154,7 @@ jobs:
         if: matrix.lang == 'node'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ inputs.node_version }}
           cache: 'npm'
           cache-dependency-path: ${{ matrix.path }}/package-lock.json
 
@@ -263,7 +268,7 @@ jobs:
         if: matrix.lang == 'node'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ inputs.node_version }}
           cache: 'npm'
           cache-dependency-path: ${{ matrix.path }}/package-lock.json
 
