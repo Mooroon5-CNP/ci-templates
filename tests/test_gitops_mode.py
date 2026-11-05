@@ -78,6 +78,11 @@ class GitOpsModeTests(unittest.TestCase):
         self.assertIn("--exit-code 1", scan)
         self.assertIn("--severity CRITICAL", scan)
 
+    def test_image_digest_is_exported_from_the_build_without_changing_publication_gates(self):
+        self.assertEqual(WORKFLOW['on']['workflow_call']['outputs']['image_digest']['value'], '${{ jobs.build.outputs.image_digest }}')
+        self.assertEqual(WORKFLOW['jobs']['build']['outputs']['image_digest'], '${{ steps.image.outputs.digest }}')
+        self.assertEqual(len([step for step in WORKFLOW['jobs']['build']['steps'] if step.get('id') == 'image']), 1)
+
     def test_legacy_prod_gate_is_unchanged(self):
         self.assertEqual(WORKFLOW["jobs"]["update-config-prod"]["environment"], "production")
 
