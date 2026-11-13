@@ -233,16 +233,14 @@ Active when `target_cloud` is `gcp` or `both`.
 ### AWS ECR (eu-west-3)
 
 ```
-804210702561.dkr.ecr.eu-west-3.amazonaws.com/<app_name>:<sha>
+626278345026.dkr.ecr.eu-west-3.amazonaws.com/<app_name>:<sha>
 ```
 
 > ⚠️ **Unlike GCP, this AWS account ID is hardcoded directly in `pipeline.yml`**
 > (7 occurrences: the IAM role ARN and the ECR registry host), not read from a
-> variable. `config-repo`'s history shows a later migration of AWS resources
-> to a **different** account (`804210702561`) that this pipeline does not
-> reflect — worth confirming which account is actually correct before relying
-> on `target_cloud: aws` or `both`; an AWS build may currently authenticate
-> against the wrong account.
+> variable. Since 13/11/2026 it is `626278345026`: the previous account
+> (`804210702561`) was closed on 08/11. If the account changes again, replace
+> every occurrence here and in `cnp/aws/` (role `github-ecr-push-role`).
 
 Active when `target_cloud` is `aws` or `both`.
 **The ECR repository is created automatically on first push** if it doesn't already exist.
@@ -272,7 +270,7 @@ Actions → Variables** for the values actually in effect.
 ### AWS — OIDC / STS
 
 ```
-Role ARN : arn:aws:iam::804210702561:role/github-ecr-push-role   (hardcoded — see the ⚠️ in section 6)
+Role ARN : arn:aws:iam::626278345026:role/github-ecr-push-role   (hardcoded — see the ⚠️ in section 6)
 Region   : eu-west-3
 Action   : aws-actions/configure-aws-credentials@v4
 ```
