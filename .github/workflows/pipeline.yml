@@ -413,6 +413,11 @@ jobs:
   # ---------------------------------------------------------------------------
 
   build:
+    # Two runs of the same commit (push + portal retry) must not build in parallel: both would miss
+    # the ECR tag, rebuild, and re-point the mutable Artifact Registry tag to an unscanned image.
+    concurrency:
+      group: build-${{ inputs.app_name }}-${{ github.sha }}
+      cancel-in-progress: false
     outputs:
       image_digest: ${{ steps.image.outputs.digest || steps.existing.outputs.digest }}
     runs-on: ubuntu-latest
@@ -473,12 +478,21 @@ jobs:
         id: existing
         if: inputs.target_cloud != 'gcp'
         run: |
-          DIGEST=$(aws ecr describe-images --region eu-west-3 \
-            --repository-name "${{ inputs.app_name }}" --image-ids imageTag="${{ github.sha }}" \
-            --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
-          if [ -n "$DIGEST" ] && [ "$DIGEST" != "None" ]; then
-            echo "[build] ECR already holds ${{ github.sha }} (${DIGEST}): reusing it, no rebuild."
-            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          # Only a truly absent image means "build": any other error (rights, throttling) fails the
+          # job instead of rebuilding. `if DIGEST=$(...)` keeps the bash -e shell from exiting early.
+          ERR=$(mktemp)
+          if DIGEST=$(aws ecr describe-images --region eu-west-3 \
+                --repository-name "${{ inputs.app_name }}" --image-ids imageTag="${{ github.sha }}" \
+                --query 'imageDetails[0].imageDigest' --output text 2>"$ERR"); then
+            if [ -n "$DIGEST" ] && [ "$DIGEST" != "None" ]; then
+              echo "[build] ECR already holds ${{ github.sha }} (${DIGEST}): reusing it, no rebuild."
+              echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+            fi
+          elif grep -q 'ImageNotFoundException' "$ERR"; then
+            echo "[build] no image for ${{ github.sha }} yet: building."
+          else
+            echo "::error::describe-images failed, refusing to guess:"; cat "$ERR" >&2
+            exit 1
           fi
 
       - name: Compute image refs
@@ -515,9 +529,17 @@ jobs:
       # digest (idempotent; also repairs a run that stopped between the two registries).
       - name: Point the Artifact Registry tag to the reused image
         if: steps.existing.outputs.digest != '' && inputs.target_cloud != 'aws'
+        env:
+          EXPECTED: ${{ steps.existing.outputs.digest }}
         run: |
-          docker buildx imagetools create --tag "$IMAGE_REF" \
-            "${ECR_REF%:*}@${{ steps.existing.outputs.digest }}"
+          # A single index source is copied as is; a plain manifest would be wrapped in a new index
+          # with a new digest, silently breaking the failover provenance. Check it.
+          docker buildx imagetools create --tag "$IMAGE_REF" "${ECR_REF%:*}@${EXPECTED}"
+          GOT=$(gcloud artifacts docker images describe "$IMAGE_REF" --format='value(image_summary.digest)')
+          if [ "$GOT" != "$EXPECTED" ]; then
+            echo "::error::Artifact Registry -> ${GOT}, ECR -> ${EXPECTED}: same digest required (failover provenance)."
+            exit 1
+          fi
 
       - name: Build and push
         id: image

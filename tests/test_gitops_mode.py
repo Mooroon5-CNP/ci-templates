@@ -91,11 +91,21 @@ class GitOpsModeTests(unittest.TestCase):
         steps = {step.get('id') or step.get('name'): step for step in WORKFLOW['jobs']['build']['steps']}
         self.assertEqual(steps['existing']['if'], "inputs.target_cloud != 'gcp'")
         self.assertIn('describe-images', steps['existing']['run'])
+        self.assertIn('ImageNotFoundException', steps['existing']['run'])
         self.assertEqual(steps['image']['if'], "steps.existing.outputs.digest == ''")
         point = steps['Point the Artifact Registry tag to the reused image']
         self.assertIn("inputs.target_cloud != 'aws'", point['if'])
-        self.assertIn('steps.existing.outputs.digest', point['run'])
+        self.assertEqual(point['env']['EXPECTED'], '${{ steps.existing.outputs.digest }}')
+        self.assertIn('${EXPECTED}', point['run'])
+        self.assertIn('image_summary.digest', point['run'])
         self.assertIn('--image-tag-mutability IMMUTABLE', steps['ECR login + ensure repo']['run'])
+
+    def test_build_is_serialized_per_commit(self):
+        conc = WORKFLOW['jobs']['build']['concurrency']
+        self.assertIn('github.sha', conc['group'])
+        self.assertIn('inputs.app_name', conc['group'])
+        # BaseLoader keeps scalars as strings (see gitops_mode 'required').
+        self.assertEqual(conc['cancel-in-progress'], 'false')
 
     def test_security_tools_are_pinned_by_version_and_digest(self):
         import re
