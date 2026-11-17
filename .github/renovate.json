@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Mises à jour volontaires des outils de sécurité de la CI (trivy, gitleaks, hadolint) : épinglés par version ET empreinte",
+    "dans les workflows, jamais en :latest. Renovate propose chaque nouvelle version par une PR, que la CI teste avant merge.",
+    "Une version n'est proposée qu'après 14 jours (même règle que le reste de la plateforme). La base de vulnérabilités de",
+    "trivy n'est pas concernée : elle est téléchargée à jour à chaque exécution."
+  ],
+  "extends": ["config:recommended"],
+  "enabledManagers": ["custom.regex"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Images Docker lancées par « docker run » dans les workflows réutilisables.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "(?<depName>aquasec/trivy|zricethezav/gitleaks|hadolint/hadolint):(?<currentValue>[^\\s@]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["custom.regex"],
+      "minimumReleaseAge": "14 days",
+      "schedule": ["before 6am on monday"],
+      "labels": ["dependencies", "ci-security-tools"],
+      "commitMessageTopic": "{{depName}}"
+    }
+  ]
+}

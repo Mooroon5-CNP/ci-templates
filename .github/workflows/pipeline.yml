@@ -250,7 +250,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
-            hadolint/hadolint:v2.14.0-alpine \
+            hadolint/hadolint:v2.14.0-alpine@sha256:7aba693c1442eb31c0b015c129697cb3b6cb7da589d85c7562f9deb435a6657c \
             hadolint Dockerfile
 
   # ---------------------------------------------------------------------------
@@ -361,7 +361,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo" \
-            zricethezav/gitleaks:latest \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             detect \
             --source="/repo" \
             --report-format=json \
@@ -388,7 +388,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
-            aquasec/trivy:latest fs \
+            aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c fs \
             --scanners vuln \
             --severity CRITICAL \
             --exit-code 1 \
@@ -400,7 +400,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
-            aquasec/trivy:latest fs \
+            aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c fs \
             --scanners vuln \
             --severity HIGH,MEDIUM \
             --exit-code 0 \
@@ -414,7 +414,7 @@ jobs:
 
   build:
     outputs:
-      image_digest: ${{ steps.image.outputs.digest }}
+      image_digest: ${{ steps.image.outputs.digest || steps.existing.outputs.digest }}
     runs-on: ubuntu-latest
     needs: [scan-secrets, scan-deps]
     # id-token: write lets the runner obtain a short-lived OIDC token from GitHub,
@@ -456,10 +456,30 @@ jobs:
       - name: ECR login + ensure repo
         if: inputs.target_cloud != 'gcp'
         run: |
+          # Immutable tags: a commit SHA tag can never be silently re-pointed, so the image that
+          # runs is the one that was scanned and approved. Existing repositories are switched once,
+          # by hand (aws ecr put-image-tag-mutability); this role is not allowed to change it.
           aws ecr describe-repositories --repository-names "${{ inputs.app_name }}" --region eu-west-3 \
-            || aws ecr create-repository --repository-name "${{ inputs.app_name }}" --region eu-west-3
+            || aws ecr create-repository --repository-name "${{ inputs.app_name }}" --region eu-west-3 \
+                 --image-tag-mutability IMMUTABLE
           aws ecr get-login-password --region eu-west-3 \
             | docker login --username AWS --password-stdin "626278345026.dkr.ecr.eu-west-3.amazonaws.com"
+
+      # A re-run of the same commit (portal "retry pipeline", GitHub "Re-run") must not rebuild:
+      # a rebuild produces a new digest, which an immutable tag refuses, and the failover
+      # provenance requires the SAME digest in Artifact Registry and ECR. Reuse the image already
+      # pushed for this SHA instead. Absent tag (first run, or deleted after a failed scan) = build.
+      - name: Reuse the image already pushed for this commit
+        id: existing
+        if: inputs.target_cloud != 'gcp'
+        run: |
+          DIGEST=$(aws ecr describe-images --region eu-west-3 \
+            --repository-name "${{ inputs.app_name }}" --image-ids imageTag="${{ github.sha }}" \
+            --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+          if [ -n "$DIGEST" ] && [ "$DIGEST" != "None" ]; then
+            echo "[build] ECR already holds ${{ github.sha }} (${DIGEST}): reusing it, no rebuild."
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Compute image refs
         run: |
@@ -491,8 +511,17 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_ENV"
 
+      # Image reused (target both): make sure the Artifact Registry tag points to the very same
+      # digest (idempotent; also repairs a run that stopped between the two registries).
+      - name: Point the Artifact Registry tag to the reused image
+        if: steps.existing.outputs.digest != '' && inputs.target_cloud != 'aws'
+        run: |
+          docker buildx imagetools create --tag "$IMAGE_REF" \
+            "${ECR_REF%:*}@${{ steps.existing.outputs.digest }}"
+
       - name: Build and push
         id: image
+        if: steps.existing.outputs.digest == ''
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -562,7 +591,7 @@ jobs:
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$GITHUB_WORKSPACE:/workspace" \
-            aquasec/trivy:latest image \
+            aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c image \
             --severity CRITICAL \
             --exit-code 1 \
             --ignore-unfixed \
@@ -575,7 +604,7 @@ jobs:
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:latest image \
+            aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c image \
             --severity HIGH,MEDIUM \
             --exit-code 0 \
             --ignore-unfixed \
