@@ -80,8 +80,43 @@ class GitOpsModeTests(unittest.TestCase):
 
     def test_image_digest_is_exported_from_the_build_without_changing_publication_gates(self):
         self.assertEqual(WORKFLOW['on']['workflow_call']['outputs']['image_digest']['value'], '${{ jobs.build.outputs.image_digest }}')
-        self.assertEqual(WORKFLOW['jobs']['build']['outputs']['image_digest'], '${{ steps.image.outputs.digest }}')
+        # The digest comes from the build, or from the image already pushed for this commit (re-run).
+        self.assertEqual(WORKFLOW['jobs']['build']['outputs']['image_digest'],
+                         '${{ steps.image.outputs.digest || steps.existing.outputs.digest }}')
         self.assertEqual(len([step for step in WORKFLOW['jobs']['build']['steps'] if step.get('id') == 'image']), 1)
+
+    def test_a_rerun_reuses_the_pushed_image_instead_of_rebuilding(self):
+        # ECR tags are immutable and the failover needs one digest in both registries: a re-run of the
+        # same commit must reuse the pushed image, never rebuild it.
+        steps = {step.get('id') or step.get('name'): step for step in WORKFLOW['jobs']['build']['steps']}
+        self.assertEqual(steps['existing']['if'], "inputs.target_cloud != 'gcp'")
+        self.assertIn('describe-images', steps['existing']['run'])
+        self.assertIn('ImageNotFoundException', steps['existing']['run'])
+        self.assertEqual(steps['image']['if'], "steps.existing.outputs.digest == ''")
+        point = steps['Point the Artifact Registry tag to the reused image']
+        self.assertIn("inputs.target_cloud != 'aws'", point['if'])
+        self.assertEqual(point['env']['EXPECTED'], '${{ steps.existing.outputs.digest }}')
+        self.assertIn('${EXPECTED}', point['run'])
+        self.assertIn('image_summary.digest', point['run'])
+        self.assertIn('--image-tag-mutability IMMUTABLE', steps['ECR login + ensure repo']['run'])
+
+    def test_build_is_serialized_per_commit(self):
+        conc = WORKFLOW['jobs']['build']['concurrency']
+        self.assertIn('github.sha', conc['group'])
+        self.assertIn('inputs.app_name', conc['group'])
+        # BaseLoader keeps scalars as strings (see gitops_mode 'required').
+        self.assertEqual(conc['cancel-in-progress'], 'false')
+
+    def test_security_tools_are_pinned_by_version_and_digest(self):
+        import re
+        for name in ('pipeline.yml', 'pipeline-azure.yml'):
+            text = (ROOT / ".github" / "workflows" / name).read_text()
+            self.assertNotRegex(text, r'(trivy|gitleaks|hadolint):latest')
+            for tool in ('aquasec/trivy', 'zricethezav/gitleaks', 'hadolint/hadolint'):
+                refs = re.findall(re.escape(tool) + r':[^\s]+', text)
+                self.assertTrue(refs, f'{tool} absent de {name}')
+                for ref in refs:
+                    self.assertRegex(ref, r'@sha256:[a-f0-9]{64}$', f'{ref} non épinglé par empreinte dans {name}')
 
     def test_legacy_prod_gate_is_unchanged(self):
         self.assertEqual(WORKFLOW["jobs"]["update-config-prod"]["environment"], "production")
