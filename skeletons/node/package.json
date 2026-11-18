@@ -1,0 +1,14 @@
+{
+  "name": "{{APP_NAME}}",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "lint": "eslint src test",
+    "test": "node --test test/app.test.js"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "{{APP_NAME}}-web",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node src/build.js",
+    "lint": "eslint src test",
+    "test": "node --test test/render.test.js"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  }
+}
